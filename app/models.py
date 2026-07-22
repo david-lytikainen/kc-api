@@ -1,5 +1,8 @@
 from datetime import datetime
+import secrets
 from enum import StrEnum
+import hashlib
+import hmac
 
 from sqlalchemy import Boolean, DateTime, Enum, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -7,6 +10,34 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
     pass
+
+
+class UserRole(StrEnum):
+    CUSTOMER = "customer"
+    ADMIN = "admin"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False, default=UserRole.CUSTOMER)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        salt = secrets.token_hex(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 600000)
+        return f"{salt}${digest.hex()}"
+
+    def verify_password(self, password: str) -> bool:
+        salt, stored_digest = self.password_hash.split("$", 1)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 600000)
+        return hmac.compare_digest(stored_digest, digest.hex())
 
 
 class CommissionStatus(StrEnum):
