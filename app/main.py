@@ -2,11 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import boto3
-from fastapi import FastAPI
-from fastapi import File
-from fastapi import Header
-from fastapi import HTTPException
-from fastapi import UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import jwt
 from pydantic import BaseModel, EmailStr
@@ -87,14 +83,7 @@ class ProfileUpdateRequest(BaseModel):
     name: str
 
 
-class GalleryItemCreateRequest(BaseModel):
-    title: str
-    description: str
-    image_url: str = ""
-    s3_key: str = ""
-
-
-class GalleryItemUpdateRequest(BaseModel):
+class GalleryItemWriteRequest(BaseModel):
     title: str
     description: str
     image_url: str = ""
@@ -110,8 +99,21 @@ def create_token(user: User) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
+def find_user_by_email(session: Session, email: str) -> User | None:
+    return session.scalar(select(User).where(func.lower(User.email) == email.lower()))
+
+
 def build_user_response(user: User) -> UserResponse:
     return UserResponse(id=user.id, name=user.name, email=user.email, role=user.role.value, created_at=user.created_at, updated_at=user.updated_at)
+
+
+def sync_admin_role(session: Session, user: User) -> User:
+    if settings.admin_email and user.email.lower() == settings.admin_email.lower() and user.role != UserRole.ADMIN:
+        user.role = UserRole.ADMIN
+        session.commit()
+        session.refresh(user)
+
+    return user
 
 
 def resolve_gallery_image_url(item: GalleryItem) -> str:
@@ -145,12 +147,7 @@ def get_current_user(session: Session, authorization: str | None) -> User:
     if not user:
         raise HTTPException(status_code=401, detail="User not found.")
 
-    if settings.admin_email and user.email.lower() == settings.admin_email.lower() and user.role != UserRole.ADMIN:
-        user.role = UserRole.ADMIN
-        session.commit()
-        session.refresh(user)
-
-    return user
+    return sync_admin_role(session, user)
 
 
 def require_admin(user: User) -> None:
@@ -172,6 +169,13 @@ def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
     )
 
 
+def apply_gallery_item_payload(item: GalleryItem, payload: GalleryItemWriteRequest) -> None:
+    item.title = payload.title.strip()
+    item.description = payload.description.strip()
+    item.image_url = payload.image_url.strip()
+    item.s3_key = payload.s3_key.strip() or None
+
+
 @app.get("/gallery", response_model=list[GalleryItemResponse])
 def list_gallery_items() -> list[GalleryItemResponse]:
     with SessionLocal() as session:
@@ -183,7 +187,7 @@ def list_gallery_items() -> list[GalleryItemResponse]:
 @app.post("/auth/signup", response_model=AuthResponse)
 def signup(payload: SignupRequest) -> AuthResponse:
     with SessionLocal() as session:
-        existing_user = session.scalar(select(User).where(func.lower(User.email) == payload.email.lower()))
+        existing_user = find_user_by_email(session, payload.email)
         if existing_user:
             raise HTTPException(status_code=400, detail="Email is already registered.")
 
@@ -198,16 +202,11 @@ def signup(payload: SignupRequest) -> AuthResponse:
 @app.post("/auth/login", response_model=AuthResponse)
 def login(payload: LoginRequest) -> AuthResponse:
     with SessionLocal() as session:
-        user = session.scalar(select(User).where(func.lower(User.email) == payload.email.lower()))
+        user = find_user_by_email(session, payload.email)
         if not user or not user.verify_password(payload.password):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
 
-        if settings.admin_email and user.email.lower() == settings.admin_email.lower() and user.role != UserRole.ADMIN:
-            user.role = UserRole.ADMIN
-            session.commit()
-            session.refresh(user)
-
-        return AuthResponse(token=create_token(user), user=build_user_response(user))
+        return AuthResponse(token=create_token(user), user=build_user_response(sync_admin_role(session, user)))
 
 
 @app.get("/auth/validate-token", response_model=UserResponse)
@@ -244,12 +243,13 @@ def list_admin_gallery_items(authorization: str | None = Header(default=None)) -
 
 
 @app.post("/admin/gallery", response_model=GalleryItemResponse)
-def create_gallery_item(payload: GalleryItemCreateRequest, authorization: str | None = Header(default=None)) -> GalleryItemResponse:
+def create_gallery_item(payload: GalleryItemWriteRequest, authorization: str | None = Header(default=None)) -> GalleryItemResponse:
     with SessionLocal() as session:
         user = get_current_user(session, authorization)
         require_admin(user)
         max_order = session.scalar(select(func.max(GalleryItem.display_order)))
-        item = GalleryItem(title=payload.title.strip(), description=payload.description.strip(), image_url=payload.image_url.strip(), s3_key=payload.s3_key.strip() or None, display_order=(max_order or 0) + 10, is_published=True)
+        item = GalleryItem(display_order=(max_order or 0) + 10, is_published=True)
+        apply_gallery_item_payload(item, payload)
         session.add(item)
         session.commit()
         session.refresh(item)
@@ -257,17 +257,14 @@ def create_gallery_item(payload: GalleryItemCreateRequest, authorization: str | 
 
 
 @app.patch("/admin/gallery/{item_id}", response_model=GalleryItemResponse)
-def update_gallery_item(item_id: int, payload: GalleryItemUpdateRequest, authorization: str | None = Header(default=None)) -> GalleryItemResponse:
+def update_gallery_item(item_id: int, payload: GalleryItemWriteRequest, authorization: str | None = Header(default=None)) -> GalleryItemResponse:
     with SessionLocal() as session:
         user = get_current_user(session, authorization)
         require_admin(user)
         item = session.get(GalleryItem, item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Gallery item not found.")
-        item.title = payload.title.strip()
-        item.description = payload.description.strip()
-        item.image_url = payload.image_url.strip()
-        item.s3_key = payload.s3_key.strip() or None
+        apply_gallery_item_payload(item, payload)
         session.commit()
         session.refresh(item)
         return build_gallery_item_response(item)
