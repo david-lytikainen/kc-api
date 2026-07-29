@@ -800,6 +800,7 @@ def admin_decline_order(order_number: str, authorization: str | None = Header(de
 @app.post("/admin/orders/{order_number}/status", response_model=CommissionOrderResponse)
 def update_order_status(order_number: str, payload: StatusUpdateRequest, authorization: str | None = Header(default=None)) -> CommissionOrderResponse:
     allowed_statuses = {
+        CommissionStatus.ACCEPTED.value: CommissionStatus.ACCEPTED,
         CommissionStatus.IN_PROGRESS.value: CommissionStatus.IN_PROGRESS,
         CommissionStatus.SHIPPED.value: CommissionStatus.SHIPPED,
         CommissionStatus.DELIVERED.value: CommissionStatus.DELIVERED,
@@ -810,6 +811,8 @@ def update_order_status(order_number: str, payload: StatusUpdateRequest, authori
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
         order = get_order_or_404(session, order_number)
+        if payload.status == CommissionStatus.ACCEPTED.value and not order.quote_amount_cents:
+            raise HTTPException(status_code=400, detail="Set a quote before marking the order accepted.")
         order.status = allowed_statuses[payload.status]
         session.commit()
         session.refresh(order)
