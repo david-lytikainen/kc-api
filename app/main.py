@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from email.message import EmailMessage
-import os
 import smtplib
 from typing import Any
 
@@ -190,6 +189,10 @@ def commission_bucket() -> str:
     return settings.aws_commission_bucket or settings.aws_gallery_bucket
 
 
+def gallery_bucket() -> str:
+    return settings.aws_gallery_bucket
+
+
 def create_token(user: User) -> str:
     payload = {"sub": str(user.id), "exp": datetime.now(timezone.utc) + timedelta(days=settings.jwt_expiration_days)}
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
@@ -212,8 +215,7 @@ def sync_admin_role(session: Session, user: User) -> User:
     return user
 
 
-def resolve_s3_file_url(s3_key: str, fallback_url: str = "") -> str:
-    bucket = commission_bucket()
+def resolve_s3_file_url(bucket: str, s3_key: str, fallback_url: str = "") -> str:
     if s3_key and settings.aws_region and bucket:
         try:
             client = boto3.client("s3", region_name=settings.aws_region)
@@ -225,8 +227,8 @@ def resolve_s3_file_url(s3_key: str, fallback_url: str = "") -> str:
 
 
 def resolve_gallery_image_url(item: GalleryItem) -> str:
-    if item.s3_key and settings.aws_region and settings.aws_gallery_bucket:
-        return resolve_s3_file_url(item.s3_key, item.image_url)
+    if item.s3_key and settings.aws_region and gallery_bucket():
+        return resolve_s3_file_url(gallery_bucket(), item.s3_key, item.image_url)
 
     return item.image_url
 
@@ -296,7 +298,7 @@ def build_file_response(file: CommissionFile) -> CommissionFileResponse:
     return CommissionFileResponse(
         id=file.id,
         file_name=file.file_name,
-        file_url=resolve_s3_file_url(file.s3_key),
+        file_url=resolve_s3_file_url(commission_bucket(), file.s3_key),
         content_type=file.content_type,
         size_bytes=file.size_bytes,
         created_at=file.created_at,
@@ -369,6 +371,11 @@ def build_order_response(order: CommissionRequest, categories: list[CommissionCa
     )
 
 
+def build_order_response_for_request(session: Session, order: CommissionRequest, viewer_is_admin: bool) -> CommissionOrderResponse:
+    categories, files, comments = load_order_assets(session, order)
+    return build_order_response(order, categories, files, comments, viewer_is_admin)
+
+
 def apply_gallery_item_payload(item: GalleryItem, payload: GalleryItemWriteRequest) -> None:
     item.title = payload.title.strip()
     item.description = payload.description.strip()
@@ -428,6 +435,19 @@ def validate_comment_body(body: str) -> str:
         raise HTTPException(status_code=400, detail="Comment body is required.")
 
     return cleaned
+
+
+async def read_commission_uploads(files: list[UploadFile]) -> list[tuple[UploadFile, bytes]]:
+    prepared_files: list[tuple[UploadFile, bytes]] = []
+    for file in files:
+        content = await file.read()
+        if not file.content_type or not file.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="Reference uploads must be image files.")
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Each reference image must be 10MB or smaller.")
+        prepared_files.append((file, content))
+
+    return prepared_files
 
 
 def send_email_message(to_email: str, subject: str, body: str) -> None:
@@ -600,6 +620,7 @@ async def create_commission_request(
             raise HTTPException(status_code=400, detail="You can upload at most 5 reference images.")
         if upload_files and (not settings.aws_region or not commission_bucket()):
             raise HTTPException(status_code=400, detail="Commission uploads are not configured.")
+        prepared_files = await read_commission_uploads(upload_files)
 
         order = CommissionRequest(
             order_number=order_number,
@@ -616,21 +637,15 @@ async def create_commission_request(
         session.commit()
         session.refresh(order)
 
-        if upload_files:
+        if prepared_files:
             client = boto3.client("s3", region_name=settings.aws_region)
-            for file in upload_files:
-                content = await file.read()
-                if not file.content_type or not file.content_type.startswith("image/"):
-                    raise HTTPException(status_code=400, detail="Reference uploads must be image files.")
-                if len(content) > 10 * 1024 * 1024:
-                    raise HTTPException(status_code=400, detail="Each reference image must be 10MB or smaller.")
+            for file, content in prepared_files:
                 key = f"commissions/{order.order_number}/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
                 client.put_object(Bucket=commission_bucket(), Key=key, Body=content, ContentType=file.content_type)
-                session.add(CommissionFile(commission_request_id=order.id, file_name=os.path.basename(file.filename or "reference-image"), s3_key=key, content_type=file.content_type, size_bytes=len(content)))
+                session.add(CommissionFile(commission_request_id=order.id, file_name=file.filename or "reference-image", s3_key=key, content_type=file.content_type, size_bytes=len(content)))
             session.commit()
 
-        categories, order_files, comments = load_order_assets(session, order)
-        return build_order_response(order, categories, order_files, comments, viewer_is_admin=False)
+        return build_order_response_for_request(session, order, viewer_is_admin=False)
 
 
 @app.get("/orders/{order_number}", response_model=CommissionOrderResponse)
@@ -638,8 +653,7 @@ def get_order(order_number: str, authorization: str | None = Header(default=None
     with SessionLocal() as session:
         admin_user = try_get_current_admin_user(session, authorization)
         order = get_order_or_404(session, order_number)
-        categories, files, comments = load_order_assets(session, order)
-        return build_order_response(order, categories, files, comments, viewer_is_admin=bool(admin_user))
+        return build_order_response_for_request(session, order, viewer_is_admin=bool(admin_user))
 
 
 @app.post("/orders/{order_number}/comments", response_model=CommissionCommentResponse)
@@ -728,8 +742,7 @@ def decline_order(order_number: str) -> CommissionOrderResponse:
         order.status = CommissionStatus.DECLINED
         session.commit()
         session.refresh(order)
-        categories, files, comments = load_order_assets(session, order)
-        return build_order_response(order, categories, files, comments, viewer_is_admin=False)
+        return build_order_response_for_request(session, order, viewer_is_admin=False)
 
 
 @app.post("/orders/{order_number}/checkout")
@@ -758,8 +771,7 @@ def confirm_checkout(order_number: str, payload: CheckoutConfirmRequest) -> Comm
         order.stripe_checkout_session_id = payload.checkout_session_id
         session.commit()
         session.refresh(order)
-        categories, files, comments = load_order_assets(session, order)
-        return build_order_response(order, categories, files, comments, viewer_is_admin=False)
+        return build_order_response_for_request(session, order, viewer_is_admin=False)
 
 
 @app.post("/admin/orders/{order_number}/quote", response_model=CommissionOrderResponse)
@@ -771,8 +783,7 @@ def set_order_quote(order_number: str, payload: QuoteRequest, authorization: str
         order.status = CommissionStatus.QUOTED
         session.commit()
         session.refresh(order)
-        categories, files, comments = load_order_assets(session, order)
-        return build_order_response(order, categories, files, comments, viewer_is_admin=True)
+        return build_order_response_for_request(session, order, viewer_is_admin=True)
 
 
 @app.post("/admin/orders/{order_number}/decline", response_model=CommissionOrderResponse)
@@ -783,8 +794,7 @@ def admin_decline_order(order_number: str, authorization: str | None = Header(de
         order.status = CommissionStatus.DECLINED
         session.commit()
         session.refresh(order)
-        categories, files, comments = load_order_assets(session, order)
-        return build_order_response(order, categories, files, comments, viewer_is_admin=True)
+        return build_order_response_for_request(session, order, viewer_is_admin=True)
 
 
 @app.post("/admin/orders/{order_number}/status", response_model=CommissionOrderResponse)
@@ -803,8 +813,7 @@ def update_order_status(order_number: str, payload: StatusUpdateRequest, authori
         order.status = allowed_statuses[payload.status]
         session.commit()
         session.refresh(order)
-        categories, files, comments = load_order_assets(session, order)
-        return build_order_response(order, categories, files, comments, viewer_is_admin=True)
+        return build_order_response_for_request(session, order, viewer_is_admin=True)
 
 
 @app.get("/admin/gallery", response_model=list[GalleryItemResponse])
