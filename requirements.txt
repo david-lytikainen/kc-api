@@ -8,3 +8,4 @@ boto3==1.39.14
 PyJWT==2.9.0
 email-validator==2.2.0
 python-multipart==0.0.9
+stripe==12.4.0
