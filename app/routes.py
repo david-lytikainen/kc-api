@@ -3,7 +3,6 @@ from decimal import Decimal, InvalidOperation
 from email.message import EmailMessage
 import secrets
 import smtplib
-from typing import Any
 
 import boto3
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
@@ -121,6 +120,10 @@ def latest_comment_id_by_role(comments: list[CommissionComment], role: CommentAu
     return latest.id
 
 
+def build_comment_response_for_order(comment: CommissionComment, comments: list[CommissionComment]) -> CommissionCommentResponse:
+    return build_comment_response(comment, latest_comment_id_by_role(comments, CommentAuthorRole.CUSTOMER), latest_comment_id_by_role(comments, CommentAuthorRole.ADMIN))
+
+
 def build_comment_response(comment: CommissionComment, latest_customer_comment_id: int | None, latest_admin_comment_id: int | None) -> CommissionCommentResponse:
     latest_id = latest_admin_comment_id if comment.author_role == CommentAuthorRole.ADMIN else latest_customer_comment_id
     return CommissionCommentResponse(id=comment.id, author_role=comment.author_role.value, body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at, can_send_email=comment.id == latest_id and comment.email_sent_at is None)
@@ -186,6 +189,13 @@ def get_category_or_404(session: Session, category_id: int) -> CommissionCategor
     if not category:
         raise HTTPException(status_code=404, detail="Category not found.")
     return category
+
+
+def get_order_comment_or_404(session: Session, order: CommissionRequest, comment_id: int) -> CommissionComment:
+    comment = session.get(CommissionComment, comment_id)
+    if not comment or comment.commission_request_id != order.id:
+        raise HTTPException(status_code=404, detail="Comment not found.")
+    return comment
 
 
 def load_order_assets(session: Session, order: CommissionRequest) -> tuple[list[CommissionCategory], list[CommissionFile], list[CommissionComment]]:
@@ -401,7 +411,7 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
         session.commit()
         session.refresh(comment)
         comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
-        return build_comment_response(comment, latest_comment_id_by_role(comments, CommentAuthorRole.CUSTOMER), latest_comment_id_by_role(comments, CommentAuthorRole.ADMIN))
+        return build_comment_response_for_order(comment, comments)
 
 
 @router.patch("/orders/{order_number}/comments/{comment_id}", response_model=CommissionCommentResponse)
@@ -410,9 +420,7 @@ def update_comment(order_number: str, comment_id: int, payload: CommissionCommen
         admin_user = try_get_current_admin_user(session, authorization)
         actor_role = CommentAuthorRole.ADMIN if admin_user else CommentAuthorRole.CUSTOMER
         order = get_order_or_404(session, order_number)
-        comment = session.get(CommissionComment, comment_id)
-        if not comment or comment.commission_request_id != order.id:
-            raise HTTPException(status_code=404, detail="Comment not found.")
+        comment = get_order_comment_or_404(session, order, comment_id)
         if comment.author_role != actor_role:
             raise HTTPException(status_code=403, detail="You can only edit your own role comments.")
         comment.body = validate_comment_body(payload.body)
@@ -420,7 +428,7 @@ def update_comment(order_number: str, comment_id: int, payload: CommissionCommen
         session.commit()
         session.refresh(comment)
         comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
-        return build_comment_response(comment, latest_comment_id_by_role(comments, CommentAuthorRole.CUSTOMER), latest_comment_id_by_role(comments, CommentAuthorRole.ADMIN))
+        return build_comment_response_for_order(comment, comments)
 
 
 @router.delete("/orders/{order_number}/comments/{comment_id}")
@@ -429,9 +437,7 @@ def delete_comment(order_number: str, comment_id: int, authorization: str | None
         admin_user = try_get_current_admin_user(session, authorization)
         actor_role = CommentAuthorRole.ADMIN if admin_user else CommentAuthorRole.CUSTOMER
         order = get_order_or_404(session, order_number)
-        comment = session.get(CommissionComment, comment_id)
-        if not comment or comment.commission_request_id != order.id:
-            raise HTTPException(status_code=404, detail="Comment not found.")
+        comment = get_order_comment_or_404(session, order, comment_id)
         if comment.author_role != actor_role:
             raise HTTPException(status_code=403, detail="You can only delete your own role comments.")
         session.delete(comment)
@@ -445,9 +451,7 @@ def send_comment_email(order_number: str, comment_id: int, authorization: str | 
         admin_user = try_get_current_admin_user(session, authorization)
         actor_role = CommentAuthorRole.ADMIN if admin_user else CommentAuthorRole.CUSTOMER
         order = get_order_or_404(session, order_number)
-        comment = session.get(CommissionComment, comment_id)
-        if not comment or comment.commission_request_id != order.id:
-            raise HTTPException(status_code=404, detail="Comment not found.")
+        comment = get_order_comment_or_404(session, order, comment_id)
         if comment.author_role != actor_role:
             raise HTTPException(status_code=403, detail="You can only email your own role comments.")
         comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
@@ -465,7 +469,7 @@ def send_comment_email(order_number: str, comment_id: int, authorization: str | 
         session.commit()
         session.refresh(comment)
         comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
-        return build_comment_response(comment, latest_comment_id_by_role(comments, CommentAuthorRole.CUSTOMER), latest_comment_id_by_role(comments, CommentAuthorRole.ADMIN))
+        return build_comment_response_for_order(comment, comments)
 
 
 @router.post("/orders/{order_number}/decline", response_model=CommissionOrderResponse)
@@ -586,7 +590,7 @@ def update_gallery_item(item_id: int, payload: GalleryItemWriteRequest, authoriz
 
 
 @router.delete("/admin/gallery/{item_id}")
-def delete_gallery_item(item_id: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+def delete_gallery_item(item_id: int, authorization: str | None = Header(default=None)) -> dict[str, str]:
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
         item = session.get(GalleryItem, item_id)
