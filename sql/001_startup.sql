@@ -1,14 +1,24 @@
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = 'commission_requests'
-          AND column_name = 'request_summary'
-    ) THEN
-        ALTER TABLE commission_requests RENAME TO commission_requests_legacy;
-    END IF;
-END $$;
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'customer',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS gallery_items (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    title VARCHAR(255) NOT NULL,
+    description TEXT NOT NULL,
+    image_url VARCHAR(1024) NOT NULL,
+    s3_key VARCHAR(512),
+    display_order INTEGER NOT NULL DEFAULT 0,
+    is_published BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 CREATE TABLE IF NOT EXISTS commission_categories (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
@@ -56,6 +66,9 @@ CREATE TABLE IF NOT EXISTS commission_comments (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS ix_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS ix_gallery_items_display_order ON gallery_items (display_order);
+CREATE INDEX IF NOT EXISTS ix_gallery_items_is_published ON gallery_items (is_published);
 CREATE INDEX IF NOT EXISTS ix_commission_categories_is_archived ON commission_categories (is_archived);
 CREATE INDEX IF NOT EXISTS ix_commission_requests_order_number ON commission_requests (order_number);
 CREATE INDEX IF NOT EXISTS ix_commission_requests_customer_email ON commission_requests (customer_email);
