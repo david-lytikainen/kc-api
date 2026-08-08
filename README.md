@@ -5,7 +5,7 @@ Minimal FastAPI + SQLAlchemy skeleton for the art commission site.
 ## Structure
 
 - `app/main.py`: app startup entrypoint, lifespan setup, and local `python app/main.py` runner
-- `app/config.py`: environment-backed settings, engine, and session setup
+- `app/config.py`: simple `.env` loading, engine, and session setup
 - `app/dto.py`: API request/response DTOs with camelCase aliases for the frontend
 - `app/routes.py`: all FastAPI routes and route helpers
 - `app/models.py`: SQLAlchemy models

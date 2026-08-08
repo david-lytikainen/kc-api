@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 import stripe
 
-from app.config import SessionLocal, settings
+from app.config import ADMIN_EMAIL, AWS_COMMISSION_BUCKET, AWS_GALLERY_BUCKET, AWS_REGION, JWT_EXPIRATION_DAYS, JWT_SECRET, PUBLIC_APP_BASE_URL, SMTP_FROM_EMAIL, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME, STRIPE_SECRET_KEY, SessionLocal
 from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryItemWriteRequest, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, ProfileUpdateRequest, QuoteRequest, StatusUpdateRequest, UserResponse
 from app.models import CommentAuthorRole, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatus, GalleryItem, User, UserRole
 
@@ -20,16 +20,16 @@ router = APIRouter()
 
 
 def commission_bucket() -> str:
-    return settings.aws_commission_bucket or settings.aws_gallery_bucket
+    return AWS_COMMISSION_BUCKET or AWS_GALLERY_BUCKET
 
 
 def gallery_bucket() -> str:
-    return settings.aws_gallery_bucket
+    return AWS_GALLERY_BUCKET
 
 
 def create_token(user: User) -> str:
-    payload = {"sub": str(user.id), "exp": datetime.now(timezone.utc) + timedelta(days=settings.jwt_expiration_days)}
-    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+    payload = {"sub": str(user.id), "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRATION_DAYS)}
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
 
 def build_user_response(user: User) -> UserResponse:
@@ -41,7 +41,7 @@ def find_user_by_email(session: Session, email: str) -> User | None:
 
 
 def sync_admin_role(session: Session, user: User) -> User:
-    if settings.admin_email and user.email.lower() == settings.admin_email.lower() and user.role != UserRole.ADMIN:
+    if ADMIN_EMAIL and user.email.lower() == ADMIN_EMAIL.lower() and user.role != UserRole.ADMIN:
         user.role = UserRole.ADMIN
         session.commit()
         session.refresh(user)
@@ -49,9 +49,9 @@ def sync_admin_role(session: Session, user: User) -> User:
 
 
 def resolve_s3_file_url(bucket: str, s3_key: str, fallback_url: str = "") -> str:
-    if s3_key and settings.aws_region and bucket:
+    if s3_key and AWS_REGION and bucket:
         try:
-            client = boto3.client("s3", region_name=settings.aws_region)
+            client = boto3.client("s3", region_name=AWS_REGION)
             return client.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": s3_key}, ExpiresIn=3600)
         except Exception:
             return fallback_url
@@ -59,7 +59,7 @@ def resolve_s3_file_url(bucket: str, s3_key: str, fallback_url: str = "") -> str
 
 
 def resolve_gallery_image_url(item: GalleryItem) -> str:
-    if item.s3_key and settings.aws_region and gallery_bucket():
+    if item.s3_key and AWS_REGION and gallery_bucket():
         return resolve_s3_file_url(gallery_bucket(), item.s3_key, item.image_url)
     return item.image_url
 
@@ -73,7 +73,7 @@ def get_token_from_header(authorization: str | None) -> str:
 def decode_user_from_token(session: Session, authorization: str | None) -> User:
     token = get_token_from_header(authorization)
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="Invalid or expired token.") from exc
     user_id = payload.get("sub")
@@ -226,27 +226,27 @@ async def read_commission_uploads(files: list[UploadFile]) -> list[tuple[UploadF
 
 
 def send_email_message(to_email: str, subject: str, body: str) -> None:
-    if not settings.smtp_host or not settings.smtp_from_email:
+    if not SMTP_HOST or not SMTP_FROM_EMAIL:
         raise HTTPException(status_code=400, detail="SMTP email is not configured.")
     message = EmailMessage()
-    message["From"] = settings.smtp_from_email
+    message["From"] = SMTP_FROM_EMAIL
     message["To"] = to_email
     message["Subject"] = subject
     message.set_content(body)
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
-        if settings.smtp_username and settings.smtp_password:
-            server.login(settings.smtp_username, settings.smtp_password)
+        if SMTP_USERNAME and SMTP_PASSWORD:
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
         server.send_message(message)
 
 
 def create_checkout_session(order: CommissionRequest) -> str:
-    if not settings.stripe_secret_key:
+    if not STRIPE_SECRET_KEY:
         raise HTTPException(status_code=400, detail="Stripe is not configured.")
     session = stripe.checkout.Session.create(
         mode="payment",
-        success_url=f"{settings.public_app_base_url.rstrip('/')}/order/{order.order_number}?checkout_session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{settings.public_app_base_url.rstrip('/')}/order/{order.order_number}",
+        success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}?checkout_session_id={{CHECKOUT_SESSION_ID}}",
+        cancel_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}",
         line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": order.quote_amount_cents, "product_data": {"name": f"Commission {order.order_number}"}}}],
         metadata={"order_number": order.order_number},
     )
@@ -376,7 +376,7 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
         upload_files = files or []
         if len(upload_files) > 5:
             raise HTTPException(status_code=400, detail="You can upload at most 5 reference images.")
-        if upload_files and (not settings.aws_region or not commission_bucket()):
+        if upload_files and (not AWS_REGION or not commission_bucket()):
             raise HTTPException(status_code=400, detail="Commission uploads are not configured.")
         prepared_files = await read_commission_uploads(upload_files)
         order = CommissionRequest(order_number=order_number, customer_name=customer_name.strip(), customer_email=customer_email.lower(), customer_phone=customer_phone.strip(), category_id=selected_category.id if selected_category else None, custom_category_name=custom_category, instructions=instructions.strip(), medium=medium.strip(), size=size.strip())
@@ -384,7 +384,7 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
         session.commit()
         session.refresh(order)
         if prepared_files:
-            client = boto3.client("s3", region_name=settings.aws_region)
+            client = boto3.client("s3", region_name=AWS_REGION)
             for file, content in prepared_files:
                 key = f"commissions/{order.order_number}/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
                 client.put_object(Bucket=commission_bucket(), Key=key, Body=content, ContentType=file.content_type)
@@ -460,10 +460,10 @@ def send_comment_email(order_number: str, comment_id: int, authorization: str | 
             raise HTTPException(status_code=400, detail="Only the latest comment for that role can send email.")
         if comment.email_sent_at:
             raise HTTPException(status_code=400, detail="Email has already been sent for that comment.")
-        recipient = settings.admin_email if actor_role == CommentAuthorRole.CUSTOMER else order.customer_email
+        recipient = ADMIN_EMAIL if actor_role == CommentAuthorRole.CUSTOMER else order.customer_email
         if not recipient:
             raise HTTPException(status_code=400, detail="Email recipient is not configured.")
-        link = f"{settings.public_app_base_url.rstrip('/')}/order/{order.order_number}#comment-{comment.id}"
+        link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}#comment-{comment.id}"
         send_email_message(recipient, f"Comment update for order {order.order_number}", f"There is a new comment on order {order.order_number}.\n\nOpen the order here:\n{link}\n")
         comment.email_sent_at = datetime.now(timezone.utc)
         session.commit()
@@ -495,7 +495,7 @@ def create_order_checkout(order_number: str) -> dict[str, str]:
 
 @router.post("/orders/{order_number}/confirm-payment", response_model=CommissionOrderResponse)
 def confirm_checkout(order_number: str, payload: CheckoutConfirmRequest) -> CommissionOrderResponse:
-    if not settings.stripe_secret_key:
+    if not STRIPE_SECRET_KEY:
         raise HTTPException(status_code=400, detail="Stripe is not configured.")
     checkout_session = stripe.checkout.Session.retrieve(payload.checkout_session_id)
     if checkout_session.metadata.get("order_number") != order_number:
@@ -619,10 +619,10 @@ def reorder_gallery_items(payload: GalleryReorderRequest, authorization: str | N
 def upload_gallery_image(file: UploadFile = File(...), authorization: str | None = Header(default=None)) -> dict[str, str]:
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
-    if not settings.aws_region or not settings.aws_gallery_bucket:
+    if not AWS_REGION or not AWS_GALLERY_BUCKET:
         raise HTTPException(status_code=400, detail="S3 upload is not configured.")
     key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
-    client = boto3.client("s3", region_name=settings.aws_region)
-    client.upload_fileobj(file.file, settings.aws_gallery_bucket, key, ExtraArgs={"ContentType": file.content_type or 'application/octet-stream'})
-    preview_url = client.generate_presigned_url("get_object", Params={"Bucket": settings.aws_gallery_bucket, "Key": key}, ExpiresIn=3600)
+    client = boto3.client("s3", region_name=AWS_REGION)
+    client.upload_fileobj(file.file, AWS_GALLERY_BUCKET, key, ExtraArgs={"ContentType": file.content_type or 'application/octet-stream'})
+    preview_url = client.generate_presigned_url("get_object", Params={"Bucket": AWS_GALLERY_BUCKET, "Key": key}, ExpiresIn=3600)
     return {"s3Key": key, "previewUrl": preview_url}
