@@ -247,11 +247,7 @@ def list_admin_orders(page: int = Query(default=1, ge=1), page_size: int = Query
         category_ids = [order.category_id for order in orders if order.category_id]
         categories = session.scalars(select(CommissionCategory).where(CommissionCategory.id.in_(category_ids))).all() if category_ids else []
         category_by_id = {category.id: category for category in categories}
-        items = []
-        for order in orders:
-            category_name = category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom"
-            items.append(CommissionOrderSummaryResponse(order_number=order.order_number, customer_name=order.customer_name, category_name=category_name, status=order.status.value, quote_amount_cents=order.quote_amount_cents, created_at=order.created_at, updated_at=order.updated_at))
-        return PaginatedOrdersResponse(items=items, page=page, page_size=page_size, total=total)
+        return PaginatedOrdersResponse(items=[CommissionOrderSummaryResponse(order_number=order.order_number, customer_name=order.customer_name, category_name=category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom", status=order.status.value, quote_amount_cents=order.quote_amount_cents, created_at=order.created_at, updated_at=order.updated_at) for order in orders], page=page, page_size=page_size, total=total)
 
 
 @router.post("/commissions", response_model=CommissionOrderResponse)
