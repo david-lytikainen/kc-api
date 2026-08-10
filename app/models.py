@@ -2,19 +2,45 @@ from datetime import datetime
 import hashlib
 import hmac
 import secrets
-from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
     pass
 
 
-class UserRole(StrEnum):
-    CUSTOMER = "customer"
-    ADMIN = "admin"
+ROLE_CUSTOMER = "customer"
+ROLE_ADMIN = "admin"
+ROLE_NAMES = [ROLE_CUSTOMER, ROLE_ADMIN]
+
+STATUS_SUBMITTED = "submitted"
+STATUS_QUOTED = "quoted"
+STATUS_DECLINED = "declined"
+STATUS_ACCEPTED = "accepted"
+STATUS_IN_PROGRESS = "in_progress"
+STATUS_SHIPPED = "shipped"
+STATUS_DELIVERED = "delivered"
+COMMISSION_STATUS_NAMES = [STATUS_SUBMITTED, STATUS_QUOTED, STATUS_DECLINED, STATUS_ACCEPTED, STATUS_IN_PROGRESS, STATUS_SHIPPED, STATUS_DELIVERED]
+
+
+class Role(Base):
+    __tablename__ = "roles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CommissionStatusType(Base):
+    __tablename__ = "commission_statuses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class User(Base):
@@ -24,9 +50,10 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False, default=UserRole.CUSTOMER)
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    role: Mapped[Role] = relationship()
 
     @staticmethod
     def hash_password(password: str) -> str:
@@ -38,21 +65,6 @@ class User(Base):
         salt, stored_digest = self.password_hash.split("$", 1)
         digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 600000)
         return hmac.compare_digest(stored_digest, digest.hex())
-
-
-class CommissionStatus(StrEnum):
-    SUBMITTED = "submitted"
-    QUOTED = "quoted"
-    DECLINED = "declined"
-    ACCEPTED = "accepted"
-    IN_PROGRESS = "in_progress"
-    SHIPPED = "shipped"
-    DELIVERED = "delivered"
-
-
-class CommentAuthorRole(StrEnum):
-    CUSTOMER = "customer"
-    ADMIN = "admin"
 
 
 class CommissionCategory(Base):
@@ -78,11 +90,12 @@ class CommissionRequest(Base):
     instructions: Mapped[str] = mapped_column(Text, nullable=False)
     medium: Mapped[str] = mapped_column(String(255), nullable=False)
     size: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[CommissionStatus] = mapped_column(Enum(CommissionStatus), nullable=False, default=CommissionStatus.SUBMITTED, index=True)
+    status_id: Mapped[int] = mapped_column(ForeignKey("commission_statuses.id"), nullable=False, index=True)
     quote_amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     stripe_checkout_session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    status: Mapped[CommissionStatusType] = relationship()
 
 
 class CommissionFile(Base):
@@ -102,11 +115,12 @@ class CommissionComment(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     commission_request_id: Mapped[int] = mapped_column(ForeignKey("commission_requests.id"), nullable=False, index=True)
-    author_role: Mapped[CommentAuthorRole] = mapped_column(Enum(CommentAuthorRole), nullable=False, index=True)
+    author_role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False, index=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    author_role: Mapped[Role] = relationship()
 
 
 class GalleryItem(Base):

@@ -13,7 +13,7 @@ import stripe
 
 from app.config import ADMIN_EMAIL, AWS_COMMISSION_BUCKET, AWS_GALLERY_BUCKET, AWS_REGION, JWT_EXPIRATION_DAYS, JWT_SECRET, PUBLIC_APP_BASE_URL, SMTP_FROM_EMAIL, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME, STRIPE_SECRET_KEY, SessionLocal
 from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryItemWriteRequest, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, ProfileUpdateRequest, QuoteRequest, StatusUpdateRequest, UserResponse
-from app.models import CommentAuthorRole, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatus, GalleryItem, User, UserRole
+from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryItem, Role, User
 
 
 router = APIRouter()
@@ -24,7 +24,33 @@ def commission_bucket() -> str:
 
 
 def build_user_response(user: User) -> UserResponse:
-    return UserResponse(id=user.id, name=user.name, email=user.email, role=user.role.value, created_at=user.created_at, updated_at=user.updated_at)
+    return UserResponse(id=user.id, name=user.name, email=user.email, role=user.role.name, created_at=user.created_at, updated_at=user.updated_at)
+
+
+def role_name(user: User) -> str:
+    return user.role.name
+
+
+def status_name(order: CommissionRequest) -> str:
+    return order.status.name
+
+
+def comment_role_name(comment: CommissionComment) -> str:
+    return comment.author_role.name
+
+
+def get_role_by_name(session: Session, name: str) -> Role:
+    role = session.scalar(select(Role).where(Role.name == name))
+    if not role:
+        raise HTTPException(status_code=500, detail=f"Role '{name}' is not configured.")
+    return role
+
+
+def get_status_by_name(session: Session, name: str) -> CommissionStatusType:
+    status = session.scalar(select(CommissionStatusType).where(CommissionStatusType.name == name))
+    if not status:
+        raise HTTPException(status_code=500, detail=f"Status '{name}' is not configured.")
+    return status
 
 
 def get_current_admin_user(session: Session, authorization: str | None) -> User:
@@ -39,11 +65,12 @@ def get_current_admin_user(session: Session, authorization: str | None) -> User:
     user = session.get(User, int(user_id)) if user_id else None
     if not user:
         raise HTTPException(status_code=401, detail="User not found.")
-    if ADMIN_EMAIL and user.email.lower() == ADMIN_EMAIL.lower() and user.role != UserRole.ADMIN:
-        user.role = UserRole.ADMIN
+    admin_role = get_role_by_name(session, ROLE_ADMIN)
+    if ADMIN_EMAIL and user.email.lower() == ADMIN_EMAIL.lower() and user.role_id != admin_role.id:
+        user.role_id = admin_role.id
         session.commit()
         session.refresh(user)
-    if user.role != UserRole.ADMIN:
+    if user.role_id != admin_role.id:
         raise HTTPException(status_code=403, detail="Admin access required.")
     return user
 
@@ -73,8 +100,8 @@ def build_category_response(category: CommissionCategory) -> CategoryResponse:
     return CategoryResponse(id=category.id, name=category.name, is_archived=category.is_archived, created_at=category.created_at, updated_at=category.updated_at)
 
 
-def latest_comment_id_by_role(comments: list[CommissionComment], role: CommentAuthorRole) -> int | None:
-    role_comments = [comment for comment in comments if comment.author_role == role]
+def latest_comment_id_by_role(comments: list[CommissionComment], role_name_value: str) -> int | None:
+    role_comments = [comment for comment in comments if comment_role_name(comment) == role_name_value]
     if not role_comments:
         return None
     latest = max(role_comments, key=lambda comment: (comment.created_at, comment.id))
@@ -82,10 +109,10 @@ def latest_comment_id_by_role(comments: list[CommissionComment], role: CommentAu
 
 
 def build_comment_response_for_order(comment: CommissionComment, comments: list[CommissionComment]) -> CommissionCommentResponse:
-    latest_customer_comment_id = latest_comment_id_by_role(comments, CommentAuthorRole.CUSTOMER)
-    latest_admin_comment_id = latest_comment_id_by_role(comments, CommentAuthorRole.ADMIN)
-    latest_id = latest_admin_comment_id if comment.author_role == CommentAuthorRole.ADMIN else latest_customer_comment_id
-    return CommissionCommentResponse(id=comment.id, author_role=comment.author_role.value, body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at, can_send_email=comment.id == latest_id and comment.email_sent_at is None)
+    latest_customer_comment_id = latest_comment_id_by_role(comments, ROLE_CUSTOMER)
+    latest_admin_comment_id = latest_comment_id_by_role(comments, ROLE_ADMIN)
+    latest_id = latest_admin_comment_id if comment_role_name(comment) == ROLE_ADMIN else latest_customer_comment_id
+    return CommissionCommentResponse(id=comment.id, author_role=comment_role_name(comment), body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at, can_send_email=comment.id == latest_id and comment.email_sent_at is None)
 
 
 def build_order_response_for_request(session: Session, order: CommissionRequest, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -94,8 +121,8 @@ def build_order_response_for_request(session: Session, order: CommissionRequest,
     files = session.scalars(select(CommissionFile).where(CommissionFile.commission_request_id == order.id).order_by(CommissionFile.created_at.asc(), CommissionFile.id.asc())).all()
     comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
     category_by_id = {category.id: category for category in categories}
-    latest_customer_comment_id = latest_comment_id_by_role(comments, CommentAuthorRole.CUSTOMER)
-    latest_admin_comment_id = latest_comment_id_by_role(comments, CommentAuthorRole.ADMIN)
+    latest_customer_comment_id = latest_comment_id_by_role(comments, ROLE_CUSTOMER)
+    latest_admin_comment_id = latest_comment_id_by_role(comments, ROLE_ADMIN)
     category_name = category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom"
     response_files: list[CommissionFileResponse] = []
     for file in files:
@@ -107,7 +134,7 @@ def build_order_response_for_request(session: Session, order: CommissionRequest,
             except Exception:
                 file_url = ""
         response_files.append(CommissionFileResponse(id=file.id, file_name=file.file_name, file_url=file_url, content_type=file.content_type, size_bytes=file.size_bytes, created_at=file.created_at))
-    return CommissionOrderResponse(order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=order.status.value, quote_amount_cents=order.quote_amount_cents, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[CommissionCommentResponse(id=comment.id, author_role=comment.author_role.value, body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at, can_send_email=comment.id == (latest_admin_comment_id if comment.author_role == CommentAuthorRole.ADMIN else latest_customer_comment_id) and comment.email_sent_at is None) for comment in comments])
+    return CommissionOrderResponse(order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[CommissionCommentResponse(id=comment.id, author_role=comment_role_name(comment), body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at, can_send_email=comment.id == (latest_admin_comment_id if comment_role_name(comment) == ROLE_ADMIN else latest_customer_comment_id) and comment.email_sent_at is None) for comment in comments])
 
 
 def get_order_or_404(session: Session, order_number: str) -> CommissionRequest:
@@ -151,14 +178,15 @@ def list_gallery_items() -> list[GalleryItemResponse]:
 @router.post("/auth/login", response_model=AuthResponse)
 def login(payload: LoginRequest) -> AuthResponse:
     with SessionLocal() as session:
+        admin_role = get_role_by_name(session, ROLE_ADMIN)
         user = session.scalar(select(User).where(func.lower(User.email) == payload.email.lower()))
         if not user or not user.verify_password(payload.password):
             raise HTTPException(status_code=401, detail="Invalid email or password.")
-        if ADMIN_EMAIL and user.email.lower() == ADMIN_EMAIL.lower() and user.role != UserRole.ADMIN:
-            user.role = UserRole.ADMIN
+        if ADMIN_EMAIL and user.email.lower() == ADMIN_EMAIL.lower() and user.role_id != admin_role.id:
+            user.role_id = admin_role.id
             session.commit()
             session.refresh(user)
-        if user.role != UserRole.ADMIN:
+        if user.role_id != admin_role.id:
             raise HTTPException(status_code=403, detail="Admin access required.")
         token = jwt.encode({"sub": str(user.id), "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRATION_DAYS)}, JWT_SECRET, algorithm="HS256")
         return AuthResponse(token=token, user=build_user_response(user))
@@ -247,12 +275,13 @@ def list_admin_orders(page: int = Query(default=1, ge=1), page_size: int = Query
         category_ids = [order.category_id for order in orders if order.category_id]
         categories = session.scalars(select(CommissionCategory).where(CommissionCategory.id.in_(category_ids))).all() if category_ids else []
         category_by_id = {category.id: category for category in categories}
-        return PaginatedOrdersResponse(items=[CommissionOrderSummaryResponse(order_number=order.order_number, customer_name=order.customer_name, category_name=category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom", status=order.status.value, quote_amount_cents=order.quote_amount_cents, created_at=order.created_at, updated_at=order.updated_at) for order in orders], page=page, page_size=page_size, total=total)
+        return PaginatedOrdersResponse(items=[CommissionOrderSummaryResponse(order_number=order.order_number, customer_name=order.customer_name, category_name=category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom", status=status_name(order), quote_amount_cents=order.quote_amount_cents, created_at=order.created_at, updated_at=order.updated_at) for order in orders], page=page, page_size=page_size, total=total)
 
 
 @router.post("/commissions", response_model=CommissionOrderResponse)
 async def create_commission_request(customer_name: str = Form(...), customer_email: str = Form(...), customer_phone: str = Form(...), category_id: int | None = Form(default=None), custom_category_name: str = Form(default=""), instructions: str = Form(...), medium: str = Form(...), size: str = Form(...), files: list[UploadFile] | None = File(default=None)) -> CommissionOrderResponse:
     with SessionLocal() as session:
+        submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
         order_number = ""
         for _ in range(20):
             candidate = str(secrets.randbelow(900000) + 100000)
@@ -278,7 +307,7 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
         if upload_files and (not AWS_REGION or not commission_bucket()):
             raise HTTPException(status_code=400, detail="Commission uploads are not configured.")
         prepared_files = await read_commission_uploads(upload_files)
-        order = CommissionRequest(order_number=order_number, customer_name=customer_name.strip(), customer_email=customer_email.lower(), customer_phone=customer_phone.strip(), category_id=selected_category.id if selected_category else None, custom_category_name=custom_category, instructions=instructions.strip(), medium=medium.strip(), size=size.strip())
+        order = CommissionRequest(order_number=order_number, customer_name=customer_name.strip(), customer_email=customer_email.lower(), customer_phone=customer_phone.strip(), category_id=selected_category.id if selected_category else None, custom_category_name=custom_category, instructions=instructions.strip(), medium=medium.strip(), size=size.strip(), status_id=submitted_status.id)
         session.add(order)
         session.commit()
         session.refresh(order)
@@ -304,11 +333,12 @@ def get_order(order_number: str, authorization: str | None = Header(default=None
 def create_comment(order_number: str, payload: CommissionCommentRequest, authorization: str | None = Header(default=None)) -> CommissionCommentResponse:
     with SessionLocal() as session:
         admin_user = try_get_current_admin_user(session, authorization)
+        author_role = get_role_by_name(session, ROLE_ADMIN if admin_user else ROLE_CUSTOMER)
         order = get_order_or_404(session, order_number)
         body = payload.body.strip()
         if not body:
             raise HTTPException(status_code=400, detail="Comment body is required.")
-        comment = CommissionComment(commission_request_id=order.id, author_role=CommentAuthorRole.ADMIN if admin_user else CommentAuthorRole.CUSTOMER, body=body)
+        comment = CommissionComment(commission_request_id=order.id, author_role_id=author_role.id, body=body)
         session.add(comment)
         session.commit()
         session.refresh(comment)
@@ -320,10 +350,10 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
 def update_comment(order_number: str, comment_id: int, payload: CommissionCommentRequest, authorization: str | None = Header(default=None)) -> CommissionCommentResponse:
     with SessionLocal() as session:
         admin_user = try_get_current_admin_user(session, authorization)
-        actor_role = CommentAuthorRole.ADMIN if admin_user else CommentAuthorRole.CUSTOMER
+        actor_role = ROLE_ADMIN if admin_user else ROLE_CUSTOMER
         order = get_order_or_404(session, order_number)
         comment = get_order_comment_or_404(session, order, comment_id)
-        if comment.author_role != actor_role:
+        if comment_role_name(comment) != actor_role:
             raise HTTPException(status_code=403, detail="You can only edit your own role comments.")
         body = payload.body.strip()
         if not body:
@@ -340,10 +370,10 @@ def update_comment(order_number: str, comment_id: int, payload: CommissionCommen
 def delete_comment(order_number: str, comment_id: int, authorization: str | None = Header(default=None)) -> dict[str, str]:
     with SessionLocal() as session:
         admin_user = try_get_current_admin_user(session, authorization)
-        actor_role = CommentAuthorRole.ADMIN if admin_user else CommentAuthorRole.CUSTOMER
+        actor_role = ROLE_ADMIN if admin_user else ROLE_CUSTOMER
         order = get_order_or_404(session, order_number)
         comment = get_order_comment_or_404(session, order, comment_id)
-        if comment.author_role != actor_role:
+        if comment_role_name(comment) != actor_role:
             raise HTTPException(status_code=403, detail="You can only delete your own role comments.")
         session.delete(comment)
         session.commit()
@@ -354,10 +384,10 @@ def delete_comment(order_number: str, comment_id: int, authorization: str | None
 def send_comment_email(order_number: str, comment_id: int, authorization: str | None = Header(default=None)) -> CommissionCommentResponse:
     with SessionLocal() as session:
         admin_user = try_get_current_admin_user(session, authorization)
-        actor_role = CommentAuthorRole.ADMIN if admin_user else CommentAuthorRole.CUSTOMER
+        actor_role = ROLE_ADMIN if admin_user else ROLE_CUSTOMER
         order = get_order_or_404(session, order_number)
         comment = get_order_comment_or_404(session, order, comment_id)
-        if comment.author_role != actor_role:
+        if comment_role_name(comment) != actor_role:
             raise HTTPException(status_code=403, detail="You can only email your own role comments.")
         comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
         latest_id = latest_comment_id_by_role(comments, actor_role)
@@ -365,7 +395,7 @@ def send_comment_email(order_number: str, comment_id: int, authorization: str | 
             raise HTTPException(status_code=400, detail="Only the latest comment for that role can send email.")
         if comment.email_sent_at:
             raise HTTPException(status_code=400, detail="Email has already been sent for that comment.")
-        recipient = ADMIN_EMAIL if actor_role == CommentAuthorRole.CUSTOMER else order.customer_email
+        recipient = ADMIN_EMAIL if actor_role == ROLE_CUSTOMER else order.customer_email
         if not recipient:
             raise HTTPException(status_code=400, detail="Email recipient is not configured.")
         link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}#comment-{comment.id}"
@@ -392,9 +422,9 @@ def send_comment_email(order_number: str, comment_id: int, authorization: str | 
 def decline_order(order_number: str) -> CommissionOrderResponse:
     with SessionLocal() as session:
         order = get_order_or_404(session, order_number)
-        if order.status != CommissionStatus.QUOTED:
+        if status_name(order) != STATUS_QUOTED:
             raise HTTPException(status_code=400, detail="Only quoted orders can be declined.")
-        order.status = CommissionStatus.DECLINED
+        order.status_id = get_status_by_name(session, STATUS_DECLINED).id
         session.commit()
         session.refresh(order)
         return build_order_response_for_request(session, order, viewer_is_admin=False)
@@ -404,7 +434,7 @@ def decline_order(order_number: str) -> CommissionOrderResponse:
 def create_order_checkout(order_number: str) -> dict[str, str]:
     with SessionLocal() as session:
         order = get_order_or_404(session, order_number)
-        if order.status != CommissionStatus.QUOTED or not order.quote_amount_cents:
+        if status_name(order) != STATUS_QUOTED or not order.quote_amount_cents:
             raise HTTPException(status_code=400, detail="This order is not ready for payment.")
         if not STRIPE_SECRET_KEY:
             raise HTTPException(status_code=400, detail="Stripe is not configured.")
@@ -429,7 +459,7 @@ def confirm_checkout(order_number: str, payload: CheckoutConfirmRequest) -> Comm
         raise HTTPException(status_code=400, detail="Checkout session is not paid.")
     with SessionLocal() as session:
         order = get_order_or_404(session, order_number)
-        order.status = CommissionStatus.ACCEPTED
+        order.status_id = get_status_by_name(session, STATUS_ACCEPTED).id
         order.stripe_checkout_session_id = payload.checkout_session_id
         session.commit()
         session.refresh(order)
@@ -448,7 +478,7 @@ def set_order_quote(order_number: str, payload: QuoteRequest, authorization: str
         if amount <= 0:
             raise HTTPException(status_code=400, detail="Quote amount must be greater than zero.")
         order.quote_amount_cents = int(amount * 100)
-        order.status = CommissionStatus.QUOTED
+        order.status_id = get_status_by_name(session, STATUS_QUOTED).id
         session.commit()
         session.refresh(order)
         return build_order_response_for_request(session, order, viewer_is_admin=True)
@@ -459,7 +489,7 @@ def admin_decline_order(order_number: str, authorization: str | None = Header(de
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
         order = get_order_or_404(session, order_number)
-        order.status = CommissionStatus.DECLINED
+        order.status_id = get_status_by_name(session, STATUS_DECLINED).id
         session.commit()
         session.refresh(order)
         return build_order_response_for_request(session, order, viewer_is_admin=True)
@@ -467,20 +497,15 @@ def admin_decline_order(order_number: str, authorization: str | None = Header(de
 
 @router.post("/admin/orders/{order_number}/status", response_model=CommissionOrderResponse)
 def update_order_status(order_number: str, payload: StatusUpdateRequest, authorization: str | None = Header(default=None)) -> CommissionOrderResponse:
-    allowed_statuses = {
-        CommissionStatus.ACCEPTED.value: CommissionStatus.ACCEPTED,
-        CommissionStatus.IN_PROGRESS.value: CommissionStatus.IN_PROGRESS,
-        CommissionStatus.SHIPPED.value: CommissionStatus.SHIPPED,
-        CommissionStatus.DELIVERED.value: CommissionStatus.DELIVERED,
-    }
+    allowed_statuses = {STATUS_ACCEPTED, STATUS_IN_PROGRESS, STATUS_SHIPPED, STATUS_DELIVERED}
     if payload.status not in allowed_statuses:
         raise HTTPException(status_code=400, detail="Unsupported status transition.")
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
         order = get_order_or_404(session, order_number)
-        if payload.status == CommissionStatus.ACCEPTED.value and not order.quote_amount_cents:
+        if payload.status == STATUS_ACCEPTED and not order.quote_amount_cents:
             raise HTTPException(status_code=400, detail="Set a quote before marking the order accepted.")
-        order.status = allowed_statuses[payload.status]
+        order.status_id = get_status_by_name(session, payload.status).id
         session.commit()
         session.refresh(order)
         return build_order_response_for_request(session, order, viewer_is_admin=True)
