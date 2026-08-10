@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 import stripe
 
-from app.config import ADMIN_EMAIL, AWS_COMMISSION_BUCKET, AWS_GALLERY_BUCKET, AWS_REGION, JWT_EXPIRATION_DAYS, JWT_SECRET, PUBLIC_APP_BASE_URL, SMTP_FROM_EMAIL, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
+from app.config import ADMIN_EMAIL, AWS_REGION, JWT_EXPIRATION_DAYS, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
 from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryItemWriteRequest, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, ProfileUpdateRequest, QuoteRequest, StatusUpdateRequest, UserResponse
 from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryItem, Role, User
 
@@ -20,7 +20,7 @@ router = APIRouter()
 
 
 def commission_bucket() -> str:
-    return AWS_COMMISSION_BUCKET or AWS_GALLERY_BUCKET
+    return S3_BUCKET
 
 
 def build_user_response(user: User) -> UserResponse:
@@ -83,10 +83,10 @@ def try_get_current_admin_user(session: Session, authorization: str | None) -> U
 
 def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
     image_url = item.image_url
-    if item.s3_key and AWS_REGION and AWS_GALLERY_BUCKET:
+    if item.s3_key and AWS_REGION and S3_BUCKET:
         try:
             client = boto3.client("s3", region_name=AWS_REGION)
-            image_url = client.generate_presigned_url("get_object", Params={"Bucket": AWS_GALLERY_BUCKET, "Key": item.s3_key}, ExpiresIn=3600)
+            image_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": item.s3_key}, ExpiresIn=3600)
         except Exception:
             image_url = item.image_url
     return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at)
@@ -322,6 +322,22 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
                 client.put_object(Bucket=commission_bucket(), Key=key, Body=content, ContentType=file.content_type)
                 session.add(CommissionFile(commission_request_id=order.id, file_name=file.filename or "reference-image", s3_key=key, content_type=file.content_type, size_bytes=len(content)))
             session.commit()
+        if MAIL_SERVER and MAIL_USERNAME:
+            link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}"
+            message = EmailMessage()
+            message["From"] = MAIL_USERNAME
+            message["To"] = order.customer_email
+            message["Subject"] = f"Your commission request {order.order_number}"
+            message.set_content(
+                f"Thanks for your commission request.\n\n"
+                f"Order number: {order.order_number}\n"
+                f"Open your order here:\n{link}\n"
+            )
+            with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
+                server.starttls()
+                if MAIL_USERNAME and MAIL_PASSWORD:
+                    server.login(MAIL_USERNAME, MAIL_PASSWORD)
+                server.send_message(message)
         return build_order_response_for_request(session, order, viewer_is_admin=False)
 
 
@@ -403,17 +419,17 @@ def send_comment_email(order_number: str, comment_id: int, authorization: str | 
         if not recipient:
             raise HTTPException(status_code=400, detail="Email recipient is not configured.")
         link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}#comment-{comment.id}"
-        if not SMTP_HOST or not SMTP_FROM_EMAIL:
+        if not MAIL_SERVER or not MAIL_USERNAME:
             raise HTTPException(status_code=400, detail="SMTP email is not configured.")
         message = EmailMessage()
-        message["From"] = SMTP_FROM_EMAIL
+        message["From"] = MAIL_USERNAME
         message["To"] = recipient
         message["Subject"] = f"Comment update for order {order.order_number}"
         message.set_content(f"There is a new comment on order {order.order_number}.\n\nOpen the order here:\n{link}\n")
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
             server.starttls()
-            if SMTP_USERNAME and SMTP_PASSWORD:
-                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            if MAIL_USERNAME and MAIL_PASSWORD:
+                server.login(MAIL_USERNAME, MAIL_PASSWORD)
             server.send_message(message)
         comment.email_sent_at = datetime.now(timezone.utc)
         session.commit()
@@ -615,10 +631,10 @@ def reorder_gallery_items(payload: GalleryReorderRequest, authorization: str | N
 def upload_gallery_image(file: UploadFile = File(...), authorization: str | None = Header(default=None)) -> dict[str, str]:
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
-    if not AWS_REGION or not AWS_GALLERY_BUCKET:
+    if not AWS_REGION or not S3_BUCKET:
         raise HTTPException(status_code=400, detail="S3 upload is not configured.")
     key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
     client = boto3.client("s3", region_name=AWS_REGION)
-    client.upload_fileobj(file.file, AWS_GALLERY_BUCKET, key, ExtraArgs={"ContentType": file.content_type or 'application/octet-stream'})
-    preview_url = client.generate_presigned_url("get_object", Params={"Bucket": AWS_GALLERY_BUCKET, "Key": key}, ExpiresIn=3600)
+    client.upload_fileobj(file.file, S3_BUCKET, key, ExtraArgs={"ContentType": file.content_type or 'application/octet-stream'})
+    preview_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=3600)
     return {"s3Key": key, "previewUrl": preview_url}
