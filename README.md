@@ -35,7 +35,6 @@ cp .env.example .env
 CORS_ORIGINS=http://localhost:3000
 DATABASE_URL=sqlite:///./kc.db
 JWT_SECRET=change-me
-JWT_EXPIRATION_DAYS=365
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=change-me
 ADMIN_NAME=Kyra Admin
