@@ -40,6 +40,7 @@ cp .env.example .env
 - `PUBLIC_APP_BASE_URL`: required for Stripe return URLs and comment email links
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`: required for comment emails
 - `STRIPE_SECRET_KEY`: required for checkout and payment confirmation
+- `STRIPE_WEBHOOK_SECRET`: required if you want Stripe to confirm paid checkouts even when the browser never returns
 
 4. Run the startup SQL against your database if you are using Postgres:
 
@@ -63,3 +64,4 @@ python app/main.py
 
 - The current UI expects the API on `http://localhost:8000` unless you override `REACT_APP_API_BASE_URL` in `kc-ui`.
 - DTO responses now serialize in camelCase for the frontend, while backend code still uses snake_case internally.
+- The minimal Stripe webhook path is `POST /stripe/webhook`. Point your Stripe Checkout webhook at it and send `checkout.session.completed` events.

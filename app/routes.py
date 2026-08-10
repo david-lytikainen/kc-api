@@ -5,13 +5,13 @@ import secrets
 import smtplib
 
 import boto3
-from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Request, UploadFile
 import jwt
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 import stripe
 
-from app.config import ADMIN_EMAIL, AWS_COMMISSION_BUCKET, AWS_GALLERY_BUCKET, AWS_REGION, JWT_EXPIRATION_DAYS, JWT_SECRET, PUBLIC_APP_BASE_URL, SMTP_FROM_EMAIL, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME, STRIPE_SECRET_KEY, SessionLocal
+from app.config import ADMIN_EMAIL, AWS_COMMISSION_BUCKET, AWS_GALLERY_BUCKET, AWS_REGION, JWT_EXPIRATION_DAYS, JWT_SECRET, PUBLIC_APP_BASE_URL, SMTP_FROM_EMAIL, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_USERNAME, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
 from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryItemWriteRequest, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, ProfileUpdateRequest, QuoteRequest, StatusUpdateRequest, UserResponse
 from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryItem, Role, User
 
@@ -145,6 +145,14 @@ def get_order_comment_or_404(session: Session, order: CommissionRequest, comment
     if not comment or comment.commission_request_id != order.id:
         raise HTTPException(status_code=404, detail="Comment not found.")
     return comment
+
+
+def mark_order_paid(session: Session, order: CommissionRequest, checkout_session_id: str) -> CommissionRequest:
+    order.status_id = get_status_by_name(session, STATUS_ACCEPTED).id
+    order.stripe_checkout_session_id = checkout_session_id
+    session.commit()
+    session.refresh(order)
+    return order
 
 
 async def read_commission_uploads(files: list[UploadFile]) -> list[tuple[UploadFile, bytes]]:
@@ -455,11 +463,41 @@ def confirm_checkout(order_number: str, payload: CheckoutConfirmRequest) -> Comm
         raise HTTPException(status_code=400, detail="Checkout session is not paid.")
     with SessionLocal() as session:
         order = get_order_or_404(session, order_number)
-        order.status_id = get_status_by_name(session, STATUS_ACCEPTED).id
-        order.stripe_checkout_session_id = payload.checkout_session_id
-        session.commit()
-        session.refresh(order)
+        order = mark_order_paid(session, order, payload.checkout_session_id)
         return build_order_response_for_request(session, order, viewer_is_admin=False)
+
+
+@router.post("/stripe/webhook")
+async def stripe_webhook(request: Request, stripe_signature: str | None = Header(default=None, alias="Stripe-Signature")) -> dict[str, bool]:
+    if not STRIPE_SECRET_KEY or not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=400, detail="Stripe webhook is not configured.")
+    if not stripe_signature:
+        raise HTTPException(status_code=400, detail="Missing Stripe signature.")
+    payload = await request.body()
+    try:
+        event = stripe.Webhook.construct_event(payload, stripe_signature, STRIPE_WEBHOOK_SECRET)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid webhook payload.") from exc
+    except stripe.error.SignatureVerificationError as exc:
+        raise HTTPException(status_code=400, detail="Invalid webhook signature.") from exc
+
+    if event["type"] != "checkout.session.completed":
+        return {"received": True}
+
+    checkout_session = event["data"]["object"]
+    if checkout_session.get("payment_status") != "paid":
+        return {"received": True}
+    order_number = checkout_session.get("metadata", {}).get("order_number")
+    checkout_session_id = checkout_session.get("id")
+    if not order_number or not checkout_session_id:
+        return {"received": True}
+
+    with SessionLocal() as session:
+        order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
+        if not order or order.stripe_checkout_session_id == checkout_session_id:
+            return {"received": True}
+        mark_order_paid(session, order, checkout_session_id)
+    return {"received": True}
 
 
 @router.post("/admin/orders/{order_number}/quote", response_model=CommissionOrderResponse)
