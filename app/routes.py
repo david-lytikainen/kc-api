@@ -27,10 +27,6 @@ def build_user_response(user: User) -> UserResponse:
     return UserResponse(id=user.id, name=user.name, email=user.email, role=user.role.name, created_at=user.created_at, updated_at=user.updated_at)
 
 
-def role_name(user: User) -> str:
-    return user.role.name
-
-
 def status_name(order: CommissionRequest) -> str:
     return order.status.name
 
