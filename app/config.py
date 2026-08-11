@@ -23,10 +23,7 @@ MAIL_USERNAME = os.getenv("MAIL_USERNAME", "")
 MAIL_PASSWORD = os.getenv("MAIL_PASSWORD", "")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-
-
-def parse_cors_origins(raw_origins: str) -> list[str]:
-    return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+CORS_ORIGIN_LIST = [origin.strip() for origin in CORS_ORIGINS.split(",") if origin.strip()]
 
 
 stripe.api_key = STRIPE_SECRET_KEY or None

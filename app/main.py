@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from sqlalchemy import func, select
 
-from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, CORS_ORIGINS, SessionLocal, engine, parse_cors_origins
+from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, CORS_ORIGIN_LIST, SessionLocal, engine
 from app.models import Base, COMMISSION_STATUS_NAMES, ROLE_ADMIN, ROLE_NAMES, CommissionStatusType, Role, User
 from app.routes import router
 
@@ -53,7 +53,7 @@ async def lifespan(_: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="kc-api", lifespan=lifespan)
-    app.add_middleware(CORSMiddleware, allow_origins=parse_cors_origins(CORS_ORIGINS), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+    app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGIN_LIST, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
     app.include_router(router)
     return app
 
