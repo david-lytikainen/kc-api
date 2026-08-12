@@ -19,10 +19,6 @@ from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLIN
 router = APIRouter()
 
 
-def commission_bucket() -> str:
-    return S3_BUCKET
-
-
 def build_user_response(user: User) -> UserResponse:
     return UserResponse(id=user.id, name=user.name, email=user.email, role=user.role.name, created_at=user.created_at, updated_at=user.updated_at)
 
@@ -96,6 +92,10 @@ def build_category_response(category: CommissionCategory) -> CategoryResponse:
     return CategoryResponse(id=category.id, name=category.name, is_archived=category.is_archived, created_at=category.created_at, updated_at=category.updated_at)
 
 
+def load_order_comments(session: Session, order_id: int) -> list[CommissionComment]:
+    return session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order_id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
+
+
 def latest_comment_id_by_role(comments: list[CommissionComment], role_name_value: str) -> int | None:
     role_comments = [comment for comment in comments if comment_role_name(comment) == role_name_value]
     if not role_comments:
@@ -115,22 +115,20 @@ def build_order_response_for_request(session: Session, order: CommissionRequest,
     category_ids = [order.category_id] if order.category_id else []
     categories = session.scalars(select(CommissionCategory).where(CommissionCategory.id.in_(category_ids))).all() if category_ids else []
     files = session.scalars(select(CommissionFile).where(CommissionFile.commission_request_id == order.id).order_by(CommissionFile.created_at.asc(), CommissionFile.id.asc())).all()
-    comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
+    comments = load_order_comments(session, order.id)
     category_by_id = {category.id: category for category in categories}
-    latest_customer_comment_id = latest_comment_id_by_role(comments, ROLE_CUSTOMER)
-    latest_admin_comment_id = latest_comment_id_by_role(comments, ROLE_ADMIN)
     category_name = category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom"
     response_files: list[CommissionFileResponse] = []
     for file in files:
         file_url = ""
-        if file.s3_key and AWS_REGION and commission_bucket():
+        if file.s3_key and AWS_REGION and S3_BUCKET:
             try:
                 client = boto3.client("s3", region_name=AWS_REGION)
-                file_url = client.generate_presigned_url("get_object", Params={"Bucket": commission_bucket(), "Key": file.s3_key}, ExpiresIn=3600)
+                file_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": file.s3_key}, ExpiresIn=3600)
             except Exception:
                 file_url = ""
         response_files.append(CommissionFileResponse(id=file.id, file_name=file.file_name, file_url=file_url, content_type=file.content_type, size_bytes=file.size_bytes, created_at=file.created_at))
-    return CommissionOrderResponse(order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[CommissionCommentResponse(id=comment.id, author_role=comment_role_name(comment), body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at, can_send_email=comment.id == (latest_admin_comment_id if comment_role_name(comment) == ROLE_ADMIN else latest_customer_comment_id) and comment.email_sent_at is None) for comment in comments])
+    return CommissionOrderResponse(order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment, comments) for comment in comments])
 
 
 def get_order_or_404(session: Session, order_number: str) -> CommissionRequest:
@@ -308,7 +306,7 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
         upload_files = files or []
         if len(upload_files) > 5:
             raise HTTPException(status_code=400, detail="You can upload at most 5 reference images.")
-        if upload_files and (not AWS_REGION or not commission_bucket()):
+        if upload_files and (not AWS_REGION or not S3_BUCKET):
             raise HTTPException(status_code=400, detail="Commission uploads are not configured.")
         prepared_files = await read_commission_uploads(upload_files)
         order = CommissionRequest(order_number=order_number, customer_name=customer_name.strip(), customer_email=customer_email.lower(), customer_phone=customer_phone.strip(), category_id=selected_category.id if selected_category else None, custom_category_name=custom_category, instructions=instructions.strip(), medium=medium.strip(), size=size.strip(), status_id=submitted_status.id)
@@ -319,7 +317,7 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
             client = boto3.client("s3", region_name=AWS_REGION)
             for file, content in prepared_files:
                 key = f"commissions/{order.order_number}/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
-                client.put_object(Bucket=commission_bucket(), Key=key, Body=content, ContentType=file.content_type)
+                client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=file.content_type)
                 session.add(CommissionFile(commission_request_id=order.id, file_name=file.filename or "reference-image", s3_key=key, content_type=file.content_type, size_bytes=len(content)))
             session.commit()
         if MAIL_SERVER and MAIL_USERNAME:
@@ -362,7 +360,7 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
         session.add(comment)
         session.commit()
         session.refresh(comment)
-        comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
+        comments = load_order_comments(session, order.id)
         return build_comment_response_for_order(comment, comments)
 
 
@@ -382,7 +380,7 @@ def update_comment(order_number: str, comment_id: int, payload: CommissionCommen
         comment.email_sent_at = None
         session.commit()
         session.refresh(comment)
-        comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
+        comments = load_order_comments(session, order.id)
         return build_comment_response_for_order(comment, comments)
 
 
@@ -409,7 +407,7 @@ def send_comment_email(order_number: str, comment_id: int, authorization: str | 
         comment = get_order_comment_or_404(session, order, comment_id)
         if comment_role_name(comment) != actor_role:
             raise HTTPException(status_code=403, detail="You can only email your own role comments.")
-        comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
+        comments = load_order_comments(session, order.id)
         latest_id = latest_comment_id_by_role(comments, actor_role)
         if comment.id != latest_id:
             raise HTTPException(status_code=400, detail="Only the latest comment for that role can send email.")
@@ -434,7 +432,7 @@ def send_comment_email(order_number: str, comment_id: int, authorization: str | 
         comment.email_sent_at = datetime.now(timezone.utc)
         session.commit()
         session.refresh(comment)
-        comments = session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order.id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
+        comments = load_order_comments(session, order.id)
         return build_comment_response_for_order(comment, comments)
 
 
