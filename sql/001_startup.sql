@@ -1,3 +1,6 @@
+-- Fresh startup schema for kc-api.
+-- Run this on a new Postgres database before starting the API.
+
 CREATE TABLE IF NOT EXISTS roles (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     name VARCHAR(32) NOT NULL UNIQUE,
