@@ -117,7 +117,22 @@ def build_order_response_for_request(session: Session, order: CommissionRequest,
             except Exception:
                 file_url = ""
         response_files.append(CommissionFileResponse(id=file.id, file_name=file.file_name, file_url=file_url, content_type=file.content_type, size_bytes=file.size_bytes, created_at=file.created_at))
-    return CommissionOrderResponse(order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment, comments) for comment in comments])
+    return CommissionOrderResponse(order_kind="commission", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, gallery_image_url=None, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment, comments) for comment in comments])
+
+
+def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_is_admin: bool) -> CommissionOrderResponse:
+    image_url = order.item_image_url
+    if order.gallery_item_id:
+        item = session.get(GalleryItem, order.gallery_item_id)
+        if item and item.s3_key and AWS_REGION and S3_BUCKET:
+            try:
+                client = boto3.client("s3", region_name=AWS_REGION)
+                image_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": item.s3_key}, ExpiresIn=3600)
+            except Exception:
+                image_url = order.item_image_url
+    status = "payment_processing" if not order.is_paid else (order.status.name if order.status else STATUS_ACCEPTED)
+    response_files = [CommissionFileResponse(id=order.id, file_name=order.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=order.created_at)] if image_url else []
+    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[])
 
 
 def get_order_or_404(session: Session, order_number: str) -> CommissionRequest:
@@ -272,10 +287,10 @@ def list_admin_orders(page: int = Query(default=1, ge=1), page_size: int = Query
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
         commission_total = session.scalar(select(func.count()).select_from(CommissionRequest)) or 0
-        gallery_total = session.scalar(select(func.count()).select_from(GalleryOrder)) or 0
+        gallery_total = session.scalar(select(func.count()).select_from(GalleryOrder).where(GalleryOrder.is_paid.is_(True))) or 0
         total = commission_total + gallery_total
         commission_orders = session.scalars(select(CommissionRequest).order_by(CommissionRequest.created_at.desc(), CommissionRequest.id.desc())).all()
-        gallery_orders = session.scalars(select(GalleryOrder).order_by(GalleryOrder.created_at.desc(), GalleryOrder.id.desc())).all()
+        gallery_orders = session.scalars(select(GalleryOrder).where(GalleryOrder.is_paid.is_(True)).order_by(GalleryOrder.created_at.desc(), GalleryOrder.id.desc())).all()
         category_ids = [order.category_id for order in commission_orders if order.category_id]
         categories = session.scalars(select(CommissionCategory).where(CommissionCategory.id.in_(category_ids))).all() if category_ids else []
         category_by_id = {category.id: category for category in categories}
@@ -283,7 +298,7 @@ def list_admin_orders(page: int = Query(default=1, ge=1), page_size: int = Query
             CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="commission", customer_name=order.customer_name, category_name=category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom", status=status_name(order), amount_cents=order.quote_amount_cents, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
             for order in commission_orders
         ] + [
-            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="gallery", customer_name=order.customer_name, category_name=order.item_title, status="paid", amount_cents=order.amount_cents, can_open=False, created_at=order.created_at, updated_at=order.updated_at)
+            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="gallery", customer_name=order.customer_name, category_name=order.item_title, status=order.status.name if order.status else STATUS_ACCEPTED, amount_cents=order.amount_cents, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
             for order in gallery_orders
         ]
         summaries.sort(key=lambda order: (order.created_at, order.order_number), reverse=True)
@@ -347,8 +362,13 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
 def get_order(order_number: str, authorization: str | None = Header(default=None)) -> CommissionOrderResponse:
     with SessionLocal() as session:
         admin_user = try_get_current_admin_user(session, authorization)
-        order = get_order_or_404(session, order_number)
-        return build_order_response_for_request(session, order, viewer_is_admin=bool(admin_user))
+        order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
+        if order:
+            return build_order_response_for_request(session, order, viewer_is_admin=bool(admin_user))
+        gallery_order = session.scalar(select(GalleryOrder).where(GalleryOrder.order_number == order_number))
+        if gallery_order:
+            return build_gallery_order_response(session, gallery_order, viewer_is_admin=bool(admin_user))
+        raise HTTPException(status_code=404, detail="Order not found.")
 
 
 @router.post("/orders/{order_number}/comments", response_model=CommissionCommentResponse)
@@ -464,13 +484,16 @@ def create_gallery_checkout(item_id: int) -> dict[str, str]:
         order_number = generate_order_number(session)
         checkout = stripe.checkout.Session.create(
             mode="payment",
-            success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}?gallery_order={order_number}",
+            success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order_number}",
             cancel_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}",
             billing_address_collection="required",
             shipping_address_collection={"allowed_countries": ["US", "CA", "GB", "AU", "NZ"]},
             line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": item.price_cents, "product_data": {"name": item.title}}}],
             metadata={"order_kind": "gallery", "order_number": order_number, "gallery_item_id": str(item.id)},
         )
+        submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
+        session.add(GalleryOrder(order_number=order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, status_id=submitted_status.id, is_paid=False, customer_name="Customer", customer_email="", stripe_checkout_session_id=checkout.id))
+        session.commit()
         return {"url": checkout.url}
 
 
@@ -510,41 +533,50 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
     if checkout_session.get("payment_status") != "paid":
         return {"received": True}
     if checkout_session.get("metadata", {}).get("order_kind") == "gallery":
-        order_number = checkout_session.get("metadata", {}).get("order_number")
         checkout_session_id = checkout_session.get("id")
-        gallery_item_id = checkout_session.get("metadata", {}).get("gallery_item_id")
-        if not order_number or not checkout_session_id or not gallery_item_id:
+        if not checkout_session_id:
             return {"received": True}
         customer_details = checkout_session.get("customer_details") or {}
         shipping_details = checkout_session.get("shipping_details") or {}
         shipping_address = shipping_details.get("address") or {}
         with SessionLocal() as session:
-            existing_order = session.scalar(select(GalleryOrder).where(GalleryOrder.stripe_checkout_session_id == checkout_session_id))
-            if existing_order:
+            order = session.scalar(select(GalleryOrder).where(GalleryOrder.stripe_checkout_session_id == checkout_session_id))
+            if not order:
                 return {"received": True}
-            item = session.get(GalleryItem, int(gallery_item_id))
-            if not item:
+            if order.is_paid:
                 return {"received": True}
-            session.add(
-                GalleryOrder(
-                    order_number=order_number,
-                    gallery_item_id=item.id,
-                    item_title=item.title,
-                    item_image_url=item.image_url,
-                    amount_cents=item.price_cents or 0,
-                    customer_name=customer_details.get("name") or shipping_details.get("name") or "Customer",
-                    customer_email=customer_details.get("email") or "",
-                    shipping_name=shipping_details.get("name"),
-                    shipping_line1=shipping_address.get("line1"),
-                    shipping_line2=shipping_address.get("line2"),
-                    shipping_city=shipping_address.get("city"),
-                    shipping_state=shipping_address.get("state"),
-                    shipping_postal_code=shipping_address.get("postal_code"),
-                    shipping_country=shipping_address.get("country"),
-                    stripe_checkout_session_id=checkout_session_id,
-                )
-            )
+            order.status_id = get_status_by_name(session, STATUS_ACCEPTED).id
+            order.is_paid = True
+            order.customer_name = customer_details.get("name") or shipping_details.get("name") or "Customer"
+            order.customer_email = customer_details.get("email") or ""
+            order.shipping_name = shipping_details.get("name")
+            order.shipping_line1 = shipping_address.get("line1")
+            order.shipping_line2 = shipping_address.get("line2")
+            order.shipping_city = shipping_address.get("city")
+            order.shipping_state = shipping_address.get("state")
+            order.shipping_postal_code = shipping_address.get("postal_code")
+            order.shipping_country = shipping_address.get("country")
             session.commit()
+            session.refresh(order)
+            if order.customer_email and MAIL_SERVER and MAIL_USERNAME:
+                link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}"
+                message = EmailMessage()
+                message["From"] = MAIL_USERNAME
+                message["To"] = order.customer_email
+                message["Subject"] = f"Your gallery order {order.order_number}"
+                message.set_content(
+                    f"Thanks for your gallery purchase.\n\n"
+                    f"Order number: {order.order_number}\n"
+                    f"Open your order here:\n{link}\n"
+                )
+                try:
+                    with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
+                        server.starttls()
+                        if MAIL_USERNAME and MAIL_PASSWORD:
+                            server.login(MAIL_USERNAME, MAIL_PASSWORD)
+                        server.send_message(message)
+                except Exception:
+                    pass
         return {"received": True}
     order_number = checkout_session.get("metadata", {}).get("order_number")
     checkout_session_id = checkout_session.get("id")
@@ -595,13 +627,23 @@ def update_order_status(order_number: str, payload: StatusUpdateRequest, authori
         raise HTTPException(status_code=400, detail="Unsupported status transition.")
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
-        order = get_order_or_404(session, order_number)
-        if payload.status == STATUS_ACCEPTED and not order.quote_amount_cents:
-            raise HTTPException(status_code=400, detail="Set a quote before marking the order accepted.")
-        order.status_id = get_status_by_name(session, payload.status).id
+        order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
+        if order:
+            if payload.status == STATUS_ACCEPTED and not order.quote_amount_cents:
+                raise HTTPException(status_code=400, detail="Set a quote before marking the order accepted.")
+            order.status_id = get_status_by_name(session, payload.status).id
+            session.commit()
+            session.refresh(order)
+            return build_order_response_for_request(session, order, viewer_is_admin=True)
+        gallery_order = session.scalar(select(GalleryOrder).where(GalleryOrder.order_number == order_number))
+        if not gallery_order:
+            raise HTTPException(status_code=404, detail="Order not found.")
+        if not gallery_order.is_paid:
+            raise HTTPException(status_code=400, detail="Gallery payment is still processing.")
+        gallery_order.status_id = get_status_by_name(session, payload.status).id
         session.commit()
-        session.refresh(order)
-        return build_order_response_for_request(session, order, viewer_is_admin=True)
+        session.refresh(gallery_order)
+        return build_gallery_order_response(session, gallery_order, viewer_is_admin=True)
 
 
 @router.get("/admin/gallery", response_model=list[GalleryItemResponse])

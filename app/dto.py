@@ -123,6 +123,7 @@ class PaginatedOrdersResponse(DtoModel):
 
 
 class CommissionOrderResponse(DtoModel):
+    order_kind: str
     order_number: str
     customer_name: str
     customer_email: str
@@ -135,6 +136,15 @@ class CommissionOrderResponse(DtoModel):
     size: str
     status: str
     quote_amount_cents: int | None
+    gallery_image_url: str | None
+    shipping_name: str | None
+    shipping_line1: str | None
+    shipping_line2: str | None
+    shipping_city: str | None
+    shipping_state: str | None
+    shipping_postal_code: str | None
+    shipping_country: str | None
+    payment_pending: bool
     created_at: datetime
     updated_at: datetime
     viewer_is_admin: bool

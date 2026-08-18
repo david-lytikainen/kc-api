@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS gallery_orders (
     item_title VARCHAR(255) NOT NULL,
     item_image_url VARCHAR(1024) NOT NULL,
     amount_cents INTEGER NOT NULL,
+    status_id INTEGER REFERENCES commission_statuses (id),
+    is_paid BOOLEAN NOT NULL DEFAULT FALSE,
     customer_name VARCHAR(255) NOT NULL,
     customer_email VARCHAR(255) NOT NULL,
     shipping_name VARCHAR(255),
@@ -128,6 +130,8 @@ CREATE INDEX IF NOT EXISTS ix_gallery_items_display_order ON gallery_items (disp
 CREATE INDEX IF NOT EXISTS ix_gallery_items_is_published ON gallery_items (is_published);
 CREATE INDEX IF NOT EXISTS ix_gallery_orders_order_number ON gallery_orders (order_number);
 CREATE INDEX IF NOT EXISTS ix_gallery_orders_gallery_item_id ON gallery_orders (gallery_item_id);
+CREATE INDEX IF NOT EXISTS ix_gallery_orders_status_id ON gallery_orders (status_id);
+CREATE INDEX IF NOT EXISTS ix_gallery_orders_is_paid ON gallery_orders (is_paid);
 CREATE INDEX IF NOT EXISTS ix_gallery_orders_customer_email ON gallery_orders (customer_email);
 CREATE INDEX IF NOT EXISTS ix_gallery_orders_stripe_checkout_session_id ON gallery_orders (stripe_checkout_session_id);
 CREATE INDEX IF NOT EXISTS ix_commission_categories_is_archived ON commission_categories (is_archived);

@@ -13,6 +13,7 @@ Minimal FastAPI + SQLAlchemy skeleton for the art commission site.
 - `.env.example`: backend environment template
 - `sql/001_startup.sql`: single startup SQL file for a fresh database
 - `sql/002_gallery_orders.sql`: incremental SQL for gallery pricing and gallery orders
+- `sql/003_gallery_order_page.sql`: incremental SQL for paid gallery-order status tracking and the shared gallery order page
 
 ## Setup
 
@@ -71,6 +72,7 @@ If your database already has the earlier schema and you are updating it in place
 
 ```bash
 psql "$DATABASE_URL" -f sql/002_gallery_orders.sql
+psql "$DATABASE_URL" -f sql/003_gallery_order_page.sql
 ```
 
 5. Start the API from `main.py`:

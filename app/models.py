@@ -147,6 +147,8 @@ class GalleryOrder(Base):
     item_title: Mapped[str] = mapped_column(String(255), nullable=False)
     item_image_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    status_id: Mapped[int | None] = mapped_column(ForeignKey("commission_statuses.id"), nullable=True, index=True)
+    is_paid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     customer_name: Mapped[str] = mapped_column(String(255), nullable=False)
     customer_email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     shipping_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -159,3 +161,4 @@ class GalleryOrder(Base):
     stripe_checkout_session_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    status: Mapped[CommissionStatusType | None] = relationship()
