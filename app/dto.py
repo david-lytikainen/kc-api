@@ -47,13 +47,6 @@ class ProfileUpdateRequest(DtoModel):
     name: str
 
 
-class GalleryItemWriteRequest(DtoModel):
-    title: str
-    description: str
-    image_url: str = ""
-    s3_key: str = ""
-
-
 class GalleryReorderRequest(DtoModel):
     ordered_ids: list[int]
 

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 import stripe
 
 from app.config import ADMIN_EMAIL, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
-from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryItemWriteRequest, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, ProfileUpdateRequest, QuoteRequest, StatusUpdateRequest, UserResponse
+from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, ProfileUpdateRequest, QuoteRequest, StatusUpdateRequest, UserResponse
 from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryItem, Role, User
 
 
@@ -568,15 +568,37 @@ def list_admin_gallery_items(authorization: str | None = Header(default=None)) -
 
 
 @router.post("/admin/gallery", response_model=GalleryItemResponse)
-def create_gallery_item(payload: GalleryItemWriteRequest, authorization: str | None = Header(default=None)) -> GalleryItemResponse:
+def create_gallery_item(
+    title: str = Form(...),
+    description: str = Form(...),
+    existing_image_url: str = Form(default=""),
+    existing_s3_key: str = Form(default=""),
+    file: UploadFile | None = File(default=None),
+    authorization: str | None = Header(default=None),
+) -> GalleryItemResponse:
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
         max_order = session.scalar(select(func.max(GalleryItem.display_order)))
         item = GalleryItem(display_order=(max_order or 0) + 10, is_published=True)
-        item.title = payload.title.strip()
-        item.description = payload.description.strip()
-        item.image_url = payload.image_url.strip()
-        item.s3_key = payload.s3_key.strip() or None
+        item.title = title.strip()
+        item.description = description.strip()
+        item.image_url = existing_image_url.strip()
+        item.s3_key = existing_s3_key.strip() or None
+        if file:
+            if not file.content_type or not file.content_type.startswith("image/"):
+                raise HTTPException(status_code=400, detail="Gallery uploads must be image files.")
+            content = file.file.read()
+            if len(content) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="Each gallery image must be 10MB or smaller.")
+            if not AWS_REGION or not S3_BUCKET:
+                raise HTTPException(status_code=400, detail="S3 upload is not configured.")
+            key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
+            client = boto3.client("s3", region_name=AWS_REGION)
+            client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=file.content_type)
+            item.image_url = ""
+            item.s3_key = key
+        if not item.image_url and not item.s3_key:
+            raise HTTPException(status_code=400, detail="Choose an image before saving this gallery item.")
         session.add(item)
         session.commit()
         session.refresh(item)
@@ -584,16 +606,39 @@ def create_gallery_item(payload: GalleryItemWriteRequest, authorization: str | N
 
 
 @router.patch("/admin/gallery/{item_id}", response_model=GalleryItemResponse)
-def update_gallery_item(item_id: int, payload: GalleryItemWriteRequest, authorization: str | None = Header(default=None)) -> GalleryItemResponse:
+def update_gallery_item(
+    item_id: int,
+    title: str = Form(...),
+    description: str = Form(...),
+    existing_image_url: str = Form(default=""),
+    existing_s3_key: str = Form(default=""),
+    file: UploadFile | None = File(default=None),
+    authorization: str | None = Header(default=None),
+) -> GalleryItemResponse:
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
         item = session.get(GalleryItem, item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Gallery item not found.")
-        item.title = payload.title.strip()
-        item.description = payload.description.strip()
-        item.image_url = payload.image_url.strip()
-        item.s3_key = payload.s3_key.strip() or None
+        item.title = title.strip()
+        item.description = description.strip()
+        item.image_url = existing_image_url.strip()
+        item.s3_key = existing_s3_key.strip() or None
+        if file:
+            if not file.content_type or not file.content_type.startswith("image/"):
+                raise HTTPException(status_code=400, detail="Gallery uploads must be image files.")
+            content = file.file.read()
+            if len(content) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="Each gallery image must be 10MB or smaller.")
+            if not AWS_REGION or not S3_BUCKET:
+                raise HTTPException(status_code=400, detail="S3 upload is not configured.")
+            key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
+            client = boto3.client("s3", region_name=AWS_REGION)
+            client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=file.content_type)
+            item.image_url = ""
+            item.s3_key = key
+        if not item.image_url and not item.s3_key:
+            raise HTTPException(status_code=400, detail="Choose an image before saving this gallery item.")
         session.commit()
         session.refresh(item)
         return build_gallery_item_response(item)
@@ -623,16 +668,3 @@ def reorder_gallery_items(payload: GalleryReorderRequest, authorization: str | N
             item_by_id[item_id].display_order = index * 10
         session.commit()
         return {"status": "ok"}
-
-
-@router.post("/admin/gallery/upload")
-def upload_gallery_image(file: UploadFile = File(...), authorization: str | None = Header(default=None)) -> dict[str, str]:
-    with SessionLocal() as session:
-        get_current_admin_user(session, authorization)
-    if not AWS_REGION or not S3_BUCKET:
-        raise HTTPException(status_code=400, detail="S3 upload is not configured.")
-    key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
-    client = boto3.client("s3", region_name=AWS_REGION)
-    client.upload_fileobj(file.file, S3_BUCKET, key, ExtraArgs={"ContentType": file.content_type or 'application/octet-stream'})
-    preview_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": key}, ExpiresIn=3600)
-    return {"s3Key": key, "previewUrl": preview_url}
