@@ -131,7 +131,31 @@ class GalleryItem(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     image_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     s3_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class GalleryOrder(Base):
+    __tablename__ = "gallery_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_number: Mapped[str] = mapped_column(String(6), nullable=False, unique=True, index=True)
+    gallery_item_id: Mapped[int | None] = mapped_column(ForeignKey("gallery_items.id"), nullable=True, index=True)
+    item_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    item_image_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    customer_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    customer_email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    shipping_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipping_line1: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipping_line2: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipping_city: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipping_state: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipping_postal_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    shipping_country: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stripe_checkout_session_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

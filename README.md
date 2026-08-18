@@ -11,7 +11,8 @@ Minimal FastAPI + SQLAlchemy skeleton for the art commission site.
 - `app/models.py`: SQLAlchemy models
 - `requirements.txt`: backend dependencies
 - `.env.example`: backend environment template
-- `sql/001_startup.sql`: single startup SQL file for the current schema
+- `sql/001_startup.sql`: single startup SQL file for a fresh database
+- `sql/002_gallery_orders.sql`: incremental SQL for gallery pricing and gallery orders
 
 ## Setup
 
@@ -64,6 +65,12 @@ STRIPE_WEBHOOK_SECRET=
 
 ```bash
 psql "$DATABASE_URL" -f sql/001_startup.sql
+```
+
+If your database already has the earlier schema and you are updating it in place, also run:
+
+```bash
+psql "$DATABASE_URL" -f sql/002_gallery_orders.sql
 ```
 
 5. Start the API from `main.py`:

@@ -13,7 +13,7 @@ import stripe
 
 from app.config import ADMIN_EMAIL, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
 from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, ProfileUpdateRequest, QuoteRequest, StatusUpdateRequest, UserResponse
-from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryItem, Role, User
+from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryItem, GalleryOrder, Role, User
 
 
 router = APIRouter()
@@ -85,7 +85,7 @@ def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
             image_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": item.s3_key}, ExpiresIn=3600)
         except Exception:
             image_url = item.image_url
-    return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at)
+    return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, price_cents=item.price_cents, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at)
 
 
 def build_category_response(category: CommissionCategory) -> CategoryResponse:
@@ -140,6 +140,16 @@ def mark_order_paid(session: Session, order: CommissionRequest, checkout_session
     session.commit()
     session.refresh(order)
     return order
+
+
+def generate_order_number(session: Session) -> str:
+    for _ in range(20):
+        candidate = str(secrets.randbelow(900000) + 100000)
+        existing_commission = session.scalar(select(CommissionRequest.id).where(CommissionRequest.order_number == candidate))
+        existing_gallery = session.scalar(select(GalleryOrder.id).where(GalleryOrder.order_number == candidate))
+        if not existing_commission and not existing_gallery:
+            return candidate
+    raise HTTPException(status_code=500, detail="Unable to generate a unique order number.")
 
 
 async def read_commission_uploads(files: list[UploadFile]) -> list[tuple[UploadFile, bytes]]:
@@ -261,27 +271,32 @@ def update_category(category_id: int, payload: CategoryUpdateRequest, authorizat
 def list_admin_orders(page: int = Query(default=1, ge=1), page_size: int = Query(default=10, ge=1, le=50), authorization: str | None = Header(default=None)) -> PaginatedOrdersResponse:
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
-        total = session.scalar(select(func.count()).select_from(CommissionRequest)) or 0
-        orders = session.scalars(select(CommissionRequest).order_by(CommissionRequest.created_at.desc(), CommissionRequest.id.desc()).offset((page - 1) * page_size).limit(page_size)).all()
-        category_ids = [order.category_id for order in orders if order.category_id]
+        commission_total = session.scalar(select(func.count()).select_from(CommissionRequest)) or 0
+        gallery_total = session.scalar(select(func.count()).select_from(GalleryOrder)) or 0
+        total = commission_total + gallery_total
+        commission_orders = session.scalars(select(CommissionRequest).order_by(CommissionRequest.created_at.desc(), CommissionRequest.id.desc())).all()
+        gallery_orders = session.scalars(select(GalleryOrder).order_by(GalleryOrder.created_at.desc(), GalleryOrder.id.desc())).all()
+        category_ids = [order.category_id for order in commission_orders if order.category_id]
         categories = session.scalars(select(CommissionCategory).where(CommissionCategory.id.in_(category_ids))).all() if category_ids else []
         category_by_id = {category.id: category for category in categories}
-        return PaginatedOrdersResponse(items=[CommissionOrderSummaryResponse(order_number=order.order_number, customer_name=order.customer_name, category_name=category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom", status=status_name(order), quote_amount_cents=order.quote_amount_cents, created_at=order.created_at, updated_at=order.updated_at) for order in orders], page=page, page_size=page_size, total=total)
+        summaries = [
+            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="commission", customer_name=order.customer_name, category_name=category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom", status=status_name(order), amount_cents=order.quote_amount_cents, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
+            for order in commission_orders
+        ] + [
+            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="gallery", customer_name=order.customer_name, category_name=order.item_title, status="paid", amount_cents=order.amount_cents, can_open=False, created_at=order.created_at, updated_at=order.updated_at)
+            for order in gallery_orders
+        ]
+        summaries.sort(key=lambda order: (order.created_at, order.order_number), reverse=True)
+        start = (page - 1) * page_size
+        end = start + page_size
+        return PaginatedOrdersResponse(items=summaries[start:end], page=page, page_size=page_size, total=total)
 
 
 @router.post("/commissions", response_model=CommissionOrderResponse)
 async def create_commission_request(customer_name: str = Form(...), customer_email: str = Form(...), customer_phone: str = Form(...), category_id: int | None = Form(default=None), custom_category_name: str = Form(default=""), instructions: str = Form(...), medium: str = Form(...), size: str = Form(...), files: list[UploadFile] | None = File(default=None)) -> CommissionOrderResponse:
     with SessionLocal() as session:
         submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
-        order_number = ""
-        for _ in range(20):
-            candidate = str(secrets.randbelow(900000) + 100000)
-            existing = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == candidate))
-            if not existing:
-                order_number = candidate
-                break
-        if not order_number:
-            raise HTTPException(status_code=500, detail="Unable to generate a unique order number.")
+        order_number = generate_order_number(session)
         selected_category: CommissionCategory | None = None
         custom_category = custom_category_name.strip() or None
         if category_id:
@@ -436,6 +451,29 @@ def create_order_checkout(order_number: str) -> dict[str, str]:
         return {"url": checkout.url}
 
 
+@router.post("/gallery/{item_id}/checkout")
+def create_gallery_checkout(item_id: int) -> dict[str, str]:
+    with SessionLocal() as session:
+        item = session.get(GalleryItem, item_id)
+        if not item or not item.is_published:
+            raise HTTPException(status_code=404, detail="Gallery item not found.")
+        if not item.price_cents:
+            raise HTTPException(status_code=400, detail="This gallery item is not for sale.")
+        if not STRIPE_SECRET_KEY:
+            raise HTTPException(status_code=400, detail="Stripe is not configured.")
+        order_number = generate_order_number(session)
+        checkout = stripe.checkout.Session.create(
+            mode="payment",
+            success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}?gallery_order={order_number}",
+            cancel_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}",
+            billing_address_collection="required",
+            shipping_address_collection={"allowed_countries": ["US", "CA", "GB", "AU", "NZ"]},
+            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": item.price_cents, "product_data": {"name": item.title}}}],
+            metadata={"order_kind": "gallery", "order_number": order_number, "gallery_item_id": str(item.id)},
+        )
+        return {"url": checkout.url}
+
+
 @router.post("/orders/{order_number}/confirm-payment", response_model=CommissionOrderResponse)
 def confirm_checkout(order_number: str, payload: CheckoutConfirmRequest) -> CommissionOrderResponse:
     if not STRIPE_SECRET_KEY:
@@ -470,6 +508,43 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
 
     checkout_session = event["data"]["object"]
     if checkout_session.get("payment_status") != "paid":
+        return {"received": True}
+    if checkout_session.get("metadata", {}).get("order_kind") == "gallery":
+        order_number = checkout_session.get("metadata", {}).get("order_number")
+        checkout_session_id = checkout_session.get("id")
+        gallery_item_id = checkout_session.get("metadata", {}).get("gallery_item_id")
+        if not order_number or not checkout_session_id or not gallery_item_id:
+            return {"received": True}
+        customer_details = checkout_session.get("customer_details") or {}
+        shipping_details = checkout_session.get("shipping_details") or {}
+        shipping_address = shipping_details.get("address") or {}
+        with SessionLocal() as session:
+            existing_order = session.scalar(select(GalleryOrder).where(GalleryOrder.stripe_checkout_session_id == checkout_session_id))
+            if existing_order:
+                return {"received": True}
+            item = session.get(GalleryItem, int(gallery_item_id))
+            if not item:
+                return {"received": True}
+            session.add(
+                GalleryOrder(
+                    order_number=order_number,
+                    gallery_item_id=item.id,
+                    item_title=item.title,
+                    item_image_url=item.image_url,
+                    amount_cents=item.price_cents or 0,
+                    customer_name=customer_details.get("name") or shipping_details.get("name") or "Customer",
+                    customer_email=customer_details.get("email") or "",
+                    shipping_name=shipping_details.get("name"),
+                    shipping_line1=shipping_address.get("line1"),
+                    shipping_line2=shipping_address.get("line2"),
+                    shipping_city=shipping_address.get("city"),
+                    shipping_state=shipping_address.get("state"),
+                    shipping_postal_code=shipping_address.get("postal_code"),
+                    shipping_country=shipping_address.get("country"),
+                    stripe_checkout_session_id=checkout_session_id,
+                )
+            )
+            session.commit()
         return {"received": True}
     order_number = checkout_session.get("metadata", {}).get("order_number")
     checkout_session_id = checkout_session.get("id")
@@ -541,6 +616,7 @@ def list_admin_gallery_items(authorization: str | None = Header(default=None)) -
 def create_gallery_item(
     title: str = Form(...),
     description: str = Form(...),
+    price_amount: str = Form(default=""),
     existing_image_url: str = Form(default=""),
     existing_s3_key: str = Form(default=""),
     file: UploadFile | None = File(default=None),
@@ -554,6 +630,16 @@ def create_gallery_item(
         item.description = description.strip()
         item.image_url = existing_image_url.strip()
         item.s3_key = existing_s3_key.strip() or None
+        if price_amount.strip():
+            try:
+                amount = Decimal(price_amount).quantize(Decimal("0.01"))
+            except InvalidOperation as exc:
+                raise HTTPException(status_code=400, detail="Price must be a valid dollar amount.") from exc
+            if amount <= 0:
+                raise HTTPException(status_code=400, detail="Price must be greater than zero.")
+            item.price_cents = int(amount * 100)
+        else:
+            item.price_cents = None
         if file:
             if not file.content_type or not file.content_type.startswith("image/"):
                 raise HTTPException(status_code=400, detail="Gallery uploads must be image files.")
@@ -580,6 +666,7 @@ def update_gallery_item(
     item_id: int,
     title: str = Form(...),
     description: str = Form(...),
+    price_amount: str = Form(default=""),
     existing_image_url: str = Form(default=""),
     existing_s3_key: str = Form(default=""),
     file: UploadFile | None = File(default=None),
@@ -594,6 +681,16 @@ def update_gallery_item(
         item.description = description.strip()
         item.image_url = existing_image_url.strip()
         item.s3_key = existing_s3_key.strip() or None
+        if price_amount.strip():
+            try:
+                amount = Decimal(price_amount).quantize(Decimal("0.01"))
+            except InvalidOperation as exc:
+                raise HTTPException(status_code=400, detail="Price must be a valid dollar amount.") from exc
+            if amount <= 0:
+                raise HTTPException(status_code=400, detail="Price must be greater than zero.")
+            item.price_cents = int(amount * 100)
+        else:
+            item.price_cents = None
         if file:
             if not file.content_type or not file.content_type.startswith("image/"):
                 raise HTTPException(status_code=400, detail="Gallery uploads must be image files.")

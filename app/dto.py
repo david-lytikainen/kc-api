@@ -19,6 +19,7 @@ class GalleryItemResponse(DtoModel):
     image_url: str
     source_image_url: str
     s3_key: str | None
+    price_cents: int | None
     display_order: int
     created_at: datetime
     updated_at: datetime
@@ -104,10 +105,12 @@ class CheckoutConfirmRequest(DtoModel):
 
 class CommissionOrderSummaryResponse(DtoModel):
     order_number: str
+    order_kind: str
     customer_name: str
     category_name: str
     status: str
-    quote_amount_cents: int | None
+    amount_cents: int | None
+    can_open: bool
     created_at: datetime
     updated_at: datetime
 
