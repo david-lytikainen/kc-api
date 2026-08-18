@@ -12,8 +12,6 @@ Minimal FastAPI + SQLAlchemy skeleton for the art commission site.
 - `requirements.txt`: backend dependencies
 - `.env.example`: backend environment template
 - `sql/001_startup.sql`: single startup SQL file for a fresh database
-- `sql/002_gallery_orders.sql`: incremental SQL for gallery pricing and gallery orders
-- `sql/003_gallery_order_page.sql`: incremental SQL for paid gallery-order status tracking and the shared gallery order page
 
 ## Setup
 
@@ -68,13 +66,6 @@ STRIPE_WEBHOOK_SECRET=
 psql "$DATABASE_URL" -f sql/001_startup.sql
 ```
 
-If your database already has the earlier schema and you are updating it in place, also run:
-
-```bash
-psql "$DATABASE_URL" -f sql/002_gallery_orders.sql
-psql "$DATABASE_URL" -f sql/003_gallery_order_page.sql
-```
-
 5. Start the API from `main.py`:
 
 ```bash
@@ -84,7 +75,7 @@ python app/main.py
 6. The API will:
 
 - create any missing SQLAlchemy tables on startup
-- bootstrap the admin user from `ADMIN_EMAIL` and `ADMIN_PASSWORD` if both are set
+- authenticate the single admin from `ADMIN_EMAIL` and `ADMIN_PASSWORD`
 - listen on `http://localhost:8000`
 
 ## Notes

@@ -3,10 +3,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-from sqlalchemy import func, select
+from sqlalchemy import select
 
-from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, CORS_ORIGIN_LIST, SessionLocal, engine
-from app.models import Base, COMMISSION_STATUS_NAMES, ROLE_ADMIN, ROLE_NAMES, CommissionStatusType, Role, User
+from app.config import CORS_ORIGIN_LIST, SessionLocal, engine
+from app.models import Base, COMMISSION_STATUS_NAMES, ROLE_NAMES, CommissionStatusType, Role
 from app.routes import router
 
 
@@ -23,31 +23,10 @@ def sync_bootstrap_lookup_tables() -> None:
         session.commit()
 
 
-def sync_bootstrap_admin_user() -> None:
-    if not ADMIN_EMAIL or not ADMIN_PASSWORD:
-        return
-    with SessionLocal() as session:
-        admin_role = session.scalar(select(Role).where(Role.name == ROLE_ADMIN))
-        if not admin_role:
-            return
-        user = session.scalar(select(User).where(func.lower(User.email) == ADMIN_EMAIL.lower()))
-        if not user:
-            user = User(name=ADMIN_NAME, email=ADMIN_EMAIL.lower(), password_hash=User.hash_password(ADMIN_PASSWORD), role_id=admin_role.id)
-            session.add(user)
-        else:
-            user.name = ADMIN_NAME
-            user.email = ADMIN_EMAIL.lower()
-            user.role_id = admin_role.id
-            if not user.verify_password(ADMIN_PASSWORD):
-                user.password_hash = User.hash_password(ADMIN_PASSWORD)
-        session.commit()
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     sync_bootstrap_lookup_tables()
-    sync_bootstrap_admin_user()
     yield
 
 

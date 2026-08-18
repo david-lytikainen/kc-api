@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from email.message import EmailMessage
+import hmac
 import secrets
 import smtplib
 
@@ -11,16 +12,17 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 import stripe
 
-from app.config import ADMIN_EMAIL, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
-from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, ProfileUpdateRequest, QuoteRequest, StatusUpdateRequest, UserResponse
-from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryItem, GalleryOrder, Role, User
+from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
+from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, StatusUpdateRequest, UserResponse
+from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryItem, GalleryOrder, Role
 
 
 router = APIRouter()
 
 
-def build_user_response(user: User) -> UserResponse:
-    return UserResponse(id=user.id, name=user.name, email=user.email, role=user.role.name, created_at=user.created_at, updated_at=user.updated_at)
+def build_admin_response() -> UserResponse:
+    now = datetime.now(timezone.utc)
+    return UserResponse(id=0, name=ADMIN_NAME or "Admin", email=ADMIN_EMAIL, role=ROLE_ADMIN, created_at=now, updated_at=now)
 
 
 def status_name(order: CommissionRequest) -> str:
@@ -45,7 +47,7 @@ def get_status_by_name(session: Session, name: str) -> CommissionStatusType:
     return status
 
 
-def get_current_admin_user(session: Session, authorization: str | None) -> User:
+def get_current_admin_user(_: Session, authorization: str | None) -> bool:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token.")
     token = authorization.removeprefix("Bearer ").strip()
@@ -53,28 +55,19 @@ def get_current_admin_user(session: Session, authorization: str | None) -> User:
         payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="Invalid or expired token.") from exc
-    user_id = payload.get("sub")
-    user = session.get(User, int(user_id)) if user_id else None
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found.")
-    admin_role = get_role_by_name(session, ROLE_ADMIN)
-    if ADMIN_EMAIL and user.email.lower() == ADMIN_EMAIL.lower() and user.role_id != admin_role.id:
-        user.role_id = admin_role.id
-        session.commit()
-        session.refresh(user)
-    if user.role_id != admin_role.id:
+    if payload.get("sub") != ROLE_ADMIN:
         raise HTTPException(status_code=403, detail="Admin access required.")
-    return user
+    return True
 
 
-def try_get_current_admin_user(session: Session, authorization: str | None) -> User | None:
+def try_get_current_admin_user(session: Session, authorization: str | None) -> bool:
     if not authorization:
-        return None
+        return False
     try:
-        user = get_current_admin_user(session, authorization)
+        get_current_admin_user(session, authorization)
     except HTTPException:
-        return None
-    return user
+        return False
+    return True
 
 
 def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
@@ -193,41 +186,28 @@ def list_gallery_items() -> list[GalleryItemResponse]:
 
 @router.post("/auth/login", response_model=AuthResponse)
 def login(payload: LoginRequest) -> AuthResponse:
-    with SessionLocal() as session:
-        admin_role = get_role_by_name(session, ROLE_ADMIN)
-        user = session.scalar(select(User).where(func.lower(User.email) == payload.email.lower()))
-        if not user or not user.verify_password(payload.password):
-            raise HTTPException(status_code=401, detail="Invalid email or password.")
-        if ADMIN_EMAIL and user.email.lower() == ADMIN_EMAIL.lower() and user.role_id != admin_role.id:
-            user.role_id = admin_role.id
-            session.commit()
-            session.refresh(user)
-        if user.role_id != admin_role.id:
-            raise HTTPException(status_code=403, detail="Admin access required.")
-        token = jwt.encode({"sub": str(user.id), "exp": datetime.now(timezone.utc) + timedelta(days=365)}, JWT_SECRET, algorithm="HS256")
-        return AuthResponse(token=token, user=build_user_response(user))
+    if not ADMIN_EMAIL or not ADMIN_PASSWORD:
+        raise HTTPException(status_code=500, detail="Admin login is not configured.")
+    email_matches = hmac.compare_digest(payload.email.lower(), ADMIN_EMAIL.lower())
+    password_matches = hmac.compare_digest(payload.password, ADMIN_PASSWORD)
+    if not email_matches or not password_matches:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    token = jwt.encode({"sub": ROLE_ADMIN, "exp": datetime.now(timezone.utc) + timedelta(days=365)}, JWT_SECRET, algorithm="HS256")
+    return AuthResponse(token=token, user=build_admin_response())
 
 
 @router.get("/auth/validate-token", response_model=UserResponse)
 def validate_token(authorization: str | None = Header(default=None)) -> UserResponse:
     with SessionLocal() as session:
-        return build_user_response(get_current_admin_user(session, authorization))
+        get_current_admin_user(session, authorization)
+        return build_admin_response()
 
 
 @router.get("/profile", response_model=UserResponse)
 def get_profile(authorization: str | None = Header(default=None)) -> UserResponse:
     with SessionLocal() as session:
-        return build_user_response(get_current_admin_user(session, authorization))
-
-
-@router.patch("/profile", response_model=UserResponse)
-def update_profile(payload: ProfileUpdateRequest, authorization: str | None = Header(default=None)) -> UserResponse:
-    with SessionLocal() as session:
-        user = get_current_admin_user(session, authorization)
-        user.name = payload.name.strip()
-        session.commit()
-        session.refresh(user)
-        return build_user_response(user)
+        get_current_admin_user(session, authorization)
+        return build_admin_response()
 
 
 @router.get("/commission-categories", response_model=list[CategoryResponse])

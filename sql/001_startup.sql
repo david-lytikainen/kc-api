@@ -1,6 +1,3 @@
--- Fresh startup schema for kc-api.
--- Run this on a new Postgres database before starting the API.
-
 CREATE TABLE IF NOT EXISTS roles (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     name VARCHAR(32) NOT NULL UNIQUE,
@@ -11,16 +8,6 @@ CREATE TABLE IF NOT EXISTS roles (
 CREATE TABLE IF NOT EXISTS commission_statuses (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     name VARCHAR(32) NOT NULL UNIQUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-    name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL UNIQUE,
-    password_hash VARCHAR(255) NOT NULL,
-    role_id INTEGER NOT NULL REFERENCES roles (id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -124,8 +111,6 @@ VALUES
     ('delivered')
 ON CONFLICT (name) DO NOTHING;
 
-CREATE INDEX IF NOT EXISTS ix_users_email ON users (email);
-CREATE INDEX IF NOT EXISTS ix_users_role_id ON users (role_id);
 CREATE INDEX IF NOT EXISTS ix_gallery_items_display_order ON gallery_items (display_order);
 CREATE INDEX IF NOT EXISTS ix_gallery_items_is_published ON gallery_items (is_published);
 CREATE INDEX IF NOT EXISTS ix_gallery_orders_order_number ON gallery_orders (order_number);
@@ -142,10 +127,3 @@ CREATE INDEX IF NOT EXISTS ix_commission_requests_status_id ON commission_reques
 CREATE INDEX IF NOT EXISTS ix_commission_files_commission_request_id ON commission_files (commission_request_id);
 CREATE INDEX IF NOT EXISTS ix_commission_comments_commission_request_id ON commission_comments (commission_request_id);
 CREATE INDEX IF NOT EXISTS ix_commission_comments_author_role_id ON commission_comments (author_role_id);
-
-INSERT INTO commission_categories (name, is_archived)
-VALUES
-    ('Portrait', FALSE),
-    ('Pet Portrait', FALSE),
-    ('Custom', FALSE)
-ON CONFLICT (name) DO NOTHING;

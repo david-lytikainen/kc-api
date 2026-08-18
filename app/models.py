@@ -1,7 +1,4 @@
 from datetime import datetime
-import hashlib
-import hmac
-import secrets
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -41,30 +38,6 @@ class CommissionStatusType(Base):
     name: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-class User(Base):
-    __tablename__ = "users"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    role: Mapped[Role] = relationship()
-
-    @staticmethod
-    def hash_password(password: str) -> str:
-        salt = secrets.token_hex(16)
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 600000)
-        return f"{salt}${digest.hex()}"
-
-    def verify_password(self, password: str) -> bool:
-        salt, stored_digest = self.password_hash.split("$", 1)
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 600000)
-        return hmac.compare_digest(stored_digest, digest.hex())
 
 
 class CommissionCategory(Base):

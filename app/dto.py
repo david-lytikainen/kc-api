@@ -44,10 +44,6 @@ class LoginRequest(DtoModel):
     password: str
 
 
-class ProfileUpdateRequest(DtoModel):
-    name: str
-
-
 class GalleryReorderRequest(DtoModel):
     ordered_ids: list[int]
 
