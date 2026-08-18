@@ -96,19 +96,8 @@ def load_order_comments(session: Session, order_id: int) -> list[CommissionComme
     return session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order_id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
 
 
-def latest_comment_id_by_role(comments: list[CommissionComment], role_name_value: str) -> int | None:
-    role_comments = [comment for comment in comments if comment_role_name(comment) == role_name_value]
-    if not role_comments:
-        return None
-    latest = max(role_comments, key=lambda comment: (comment.created_at, comment.id))
-    return latest.id
-
-
 def build_comment_response_for_order(comment: CommissionComment, comments: list[CommissionComment]) -> CommissionCommentResponse:
-    latest_customer_comment_id = latest_comment_id_by_role(comments, ROLE_CUSTOMER)
-    latest_admin_comment_id = latest_comment_id_by_role(comments, ROLE_ADMIN)
-    latest_id = latest_admin_comment_id if comment_role_name(comment) == ROLE_ADMIN else latest_customer_comment_id
-    return CommissionCommentResponse(id=comment.id, author_role=comment_role_name(comment), body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at, can_send_email=comment.id == latest_id and comment.email_sent_at is None)
+    return CommissionCommentResponse(id=comment.id, author_role=comment_role_name(comment), body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at)
 
 
 def build_order_response_for_request(session: Session, order: CommissionRequest, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -360,6 +349,26 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
         session.add(comment)
         session.commit()
         session.refresh(comment)
+        recipient = order.customer_email if author_role.name == ROLE_ADMIN else ADMIN_EMAIL
+        if recipient and MAIL_SERVER and MAIL_USERNAME:
+            link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}#comment-{comment.id}"
+            message = EmailMessage()
+            message["From"] = MAIL_USERNAME
+            message["To"] = recipient
+            message["Subject"] = f"Comment update for order {order.order_number}"
+            message.set_content(f"There is a new comment on order {order.order_number}.\n\nOpen the order here:\n{link}\n")
+            try:
+                with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
+                    server.starttls()
+                    if MAIL_USERNAME and MAIL_PASSWORD:
+                        server.login(MAIL_USERNAME, MAIL_PASSWORD)
+                    server.send_message(message)
+            except Exception:
+                pass
+            else:
+                comment.email_sent_at = datetime.now(timezone.utc)
+                session.commit()
+                session.refresh(comment)
         comments = load_order_comments(session, order.id)
         return build_comment_response_for_order(comment, comments)
 
@@ -377,7 +386,6 @@ def update_comment(order_number: str, comment_id: int, payload: CommissionCommen
         if not body:
             raise HTTPException(status_code=400, detail="Comment body is required.")
         comment.body = body
-        comment.email_sent_at = None
         session.commit()
         session.refresh(comment)
         comments = load_order_comments(session, order.id)
@@ -396,44 +404,6 @@ def delete_comment(order_number: str, comment_id: int, authorization: str | None
         session.delete(comment)
         session.commit()
         return {"status": "deleted"}
-
-
-@router.post("/orders/{order_number}/comments/{comment_id}/send-email", response_model=CommissionCommentResponse)
-def send_comment_email(order_number: str, comment_id: int, authorization: str | None = Header(default=None)) -> CommissionCommentResponse:
-    with SessionLocal() as session:
-        admin_user = try_get_current_admin_user(session, authorization)
-        actor_role = ROLE_ADMIN if admin_user else ROLE_CUSTOMER
-        order = get_order_or_404(session, order_number)
-        comment = get_order_comment_or_404(session, order, comment_id)
-        if comment_role_name(comment) != actor_role:
-            raise HTTPException(status_code=403, detail="You can only email your own role comments.")
-        comments = load_order_comments(session, order.id)
-        latest_id = latest_comment_id_by_role(comments, actor_role)
-        if comment.id != latest_id:
-            raise HTTPException(status_code=400, detail="Only the latest comment for that role can send email.")
-        if comment.email_sent_at:
-            raise HTTPException(status_code=400, detail="Email has already been sent for that comment.")
-        recipient = ADMIN_EMAIL if actor_role == ROLE_CUSTOMER else order.customer_email
-        if not recipient:
-            raise HTTPException(status_code=400, detail="Email recipient is not configured.")
-        link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}#comment-{comment.id}"
-        if not MAIL_SERVER or not MAIL_USERNAME:
-            raise HTTPException(status_code=400, detail="SMTP email is not configured.")
-        message = EmailMessage()
-        message["From"] = MAIL_USERNAME
-        message["To"] = recipient
-        message["Subject"] = f"Comment update for order {order.order_number}"
-        message.set_content(f"There is a new comment on order {order.order_number}.\n\nOpen the order here:\n{link}\n")
-        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
-            server.starttls()
-            if MAIL_USERNAME and MAIL_PASSWORD:
-                server.login(MAIL_USERNAME, MAIL_PASSWORD)
-            server.send_message(message)
-        comment.email_sent_at = datetime.now(timezone.utc)
-        session.commit()
-        session.refresh(comment)
-        comments = load_order_comments(session, order.id)
-        return build_comment_response_for_order(comment, comments)
 
 
 @router.post("/orders/{order_number}/decline", response_model=CommissionOrderResponse)

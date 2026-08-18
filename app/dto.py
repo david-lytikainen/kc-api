@@ -88,7 +88,6 @@ class CommissionCommentResponse(DtoModel):
     email_sent_at: datetime | None
     created_at: datetime
     updated_at: datetime
-    can_send_email: bool
 
 
 class QuoteRequest(DtoModel):
