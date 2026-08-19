@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS commission_comments (
     author_role_id INTEGER NOT NULL REFERENCES roles (id),
     body TEXT NOT NULL,
     email_sent_at TIMESTAMPTZ,
+    email_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -115,6 +116,7 @@ CREATE TABLE IF NOT EXISTS gallery_inquiry_comments (
     author_role_id INTEGER NOT NULL REFERENCES roles (id),
     body TEXT NOT NULL,
     email_sent_at TIMESTAMPTZ,
+    email_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -125,6 +127,7 @@ CREATE TABLE IF NOT EXISTS gallery_order_comments (
     author_role_id INTEGER NOT NULL REFERENCES roles (id),
     body TEXT NOT NULL,
     email_sent_at TIMESTAMPTZ,
+    email_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

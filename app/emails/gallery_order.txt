@@ -1,0 +1,5 @@
+Thanks for your gallery purchase.
+
+Order number: {order_number}
+Open your order here:
+{link}

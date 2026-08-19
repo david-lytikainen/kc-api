@@ -1,0 +1,4 @@
+Your order status changed to {status}.
+
+Open your order here:
+{link}

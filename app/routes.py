@@ -2,11 +2,12 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from email.message import EmailMessage
 import hmac
+from pathlib import Path
 import secrets
 import smtplib
 
 import boto3
-from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, UploadFile
 import jwt
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -18,6 +19,7 @@ from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLIN
 
 
 router = APIRouter()
+EMAILS_DIR = Path(__file__).with_name("emails")
 
 
 def build_admin_response() -> UserResponse:
@@ -102,6 +104,11 @@ def send_plain_email(recipient: str, subject: str, body: str) -> bool:
     return True
 
 
+def render_email_template(template_name: str, **context: str) -> str:
+    template_path = EMAILS_DIR / template_name
+    return template_path.read_text(encoding="utf-8").format(**context)
+
+
 def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
     image_url = build_presigned_s3_url(item.s3_key, item.image_url)
     return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, price_cents=item.price_cents, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at)
@@ -124,7 +131,7 @@ def load_gallery_order_comments(session: Session, order_id: int) -> list[Gallery
 
 
 def build_comment_response_for_order(comment: CommissionComment | GalleryInquiryComment | GalleryOrderComment) -> CommissionCommentResponse:
-    return CommissionCommentResponse(id=comment.id, author_role=comment_role_name(comment), body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at)
+    return CommissionCommentResponse(id=comment.id, author_role=comment_role_name(comment), body=comment.body, email_sent_at=comment.email_sent_at, email_error=comment.email_error, created_at=comment.created_at, updated_at=comment.updated_at)
 
 
 def build_order_response_for_request(session: Session, order: CommissionRequest, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -163,8 +170,37 @@ def send_order_status_email(recipient: str, order_number: str, status: str) -> N
     send_plain_email(
         recipient,
         f"Order {order_number} status update",
-        f"Your order status changed to {status}.\n\n"
-        f"Open your order here:\n{link}\n"
+        render_email_template("order_status_update.txt", status=status, link=link)
+    )
+
+
+def update_comment_email_status(comment_kind: str, comment_id: int, email_sent_at: datetime | None, email_error: str | None) -> None:
+    with SessionLocal() as session:
+        if comment_kind == "commission":
+            comment = session.get(CommissionComment, comment_id)
+        elif comment_kind == "gallery_inquiry":
+            comment = session.get(GalleryInquiryComment, comment_id)
+        else:
+            comment = session.get(GalleryOrderComment, comment_id)
+        if not comment:
+            return
+        comment.email_sent_at = email_sent_at
+        comment.email_error = email_error
+        session.commit()
+
+
+def deliver_comment_email(comment_kind: str, comment_id: int, recipient: str, order_number: str) -> None:
+    link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order_number}#comment-{comment_id}"
+    sent = send_plain_email(
+        recipient,
+        f"Comment update for order {order_number}",
+        render_email_template("comment_update.txt", order_number=order_number, link=link),
+    )
+    update_comment_email_status(
+        comment_kind,
+        comment_id,
+        datetime.now(timezone.utc) if sent else None,
+        None if sent else "Email failed to send.",
     )
 
 
@@ -395,7 +431,7 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
                 session.add(CommissionFile(commission_request_id=order.id, file_name=file.filename or "reference-image", s3_key=key, content_type=file.content_type, size_bytes=len(content)))
             session.commit()
         link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}"
-        send_plain_email(order.customer_email, f"Your commission request {order.order_number}", f"Thanks for your commission request.\n\nOrder number: {order.order_number}\nOpen your order here:\n{link}\n")
+        send_plain_email(order.customer_email, f"Your commission request {order.order_number}", render_email_template("commission_submission.txt", order_number=order.order_number, link=link))
         return build_order_response_for_request(session, order, viewer_is_admin=False)
 
 
@@ -416,7 +452,7 @@ def get_order(order_number: str, authorization: str | None = Header(default=None
 
 
 @router.post("/orders/{order_number}/comments", response_model=CommissionCommentResponse)
-def create_comment(order_number: str, payload: CommissionCommentRequest, authorization: str | None = Header(default=None)) -> CommissionCommentResponse:
+def create_comment(order_number: str, payload: CommissionCommentRequest, background_tasks: BackgroundTasks, authorization: str | None = Header(default=None)) -> CommissionCommentResponse:
     with SessionLocal() as session:
         admin_user = try_get_current_admin_user(session, authorization)
         author_role = get_role_by_name(session, ROLE_ADMIN if admin_user else ROLE_CUSTOMER)
@@ -435,11 +471,7 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
                 session.refresh(comment)
                 recipient = gallery_order.customer_email if author_role.name == ROLE_ADMIN else ADMIN_EMAIL
                 if recipient:
-                    link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{gallery_order.order_number}#comment-{comment.id}"
-                    if send_plain_email(recipient, f"Comment update for order {gallery_order.order_number}", f"There is a new comment on order {gallery_order.order_number}.\n\nOpen the order here:\n{link}\n"):
-                        comment.email_sent_at = datetime.now(timezone.utc)
-                        session.commit()
-                        session.refresh(comment)
+                    background_tasks.add_task(deliver_comment_email, "gallery", comment.id, recipient, gallery_order.order_number)
                 return build_comment_response_for_order(comment)
             inquiry = session.scalar(select(GalleryInquiry).where(GalleryInquiry.order_number == order_number))
             if not inquiry:
@@ -448,6 +480,9 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
             session.add(comment)
             session.commit()
             session.refresh(comment)
+            recipient = inquiry.customer_email if author_role.name == ROLE_ADMIN else ADMIN_EMAIL
+            if recipient:
+                background_tasks.add_task(deliver_comment_email, "gallery_inquiry", comment.id, recipient, inquiry.order_number)
             return build_comment_response_for_order(comment)
         comment = CommissionComment(commission_request_id=order.id, author_role_id=author_role.id, body=body)
         session.add(comment)
@@ -455,11 +490,7 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
         session.refresh(comment)
         recipient = order.customer_email if author_role.name == ROLE_ADMIN else ADMIN_EMAIL
         if recipient:
-            link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}#comment-{comment.id}"
-            if send_plain_email(recipient, f"Comment update for order {order.order_number}", f"There is a new comment on order {order.order_number}.\n\nOpen the order here:\n{link}\n"):
-                comment.email_sent_at = datetime.now(timezone.utc)
-                session.commit()
-                session.refresh(comment)
+            background_tasks.add_task(deliver_comment_email, "commission", comment.id, recipient, order.order_number)
         return build_comment_response_for_order(comment)
 
 
@@ -728,7 +759,7 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
             session.refresh(order)
             if order.customer_email:
                 link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}"
-                send_plain_email(order.customer_email, f"Your gallery order {order.order_number}", f"Thanks for your gallery purchase.\n\nOrder number: {order.order_number}\nOpen your order here:\n{link}\n")
+                send_plain_email(order.customer_email, f"Your gallery order {order.order_number}", render_email_template("gallery_order.txt", order_number=order.order_number, link=link))
         return {"received": True}
     order_number = checkout_session.get("metadata", {}).get("order_number")
     checkout_session_id = checkout_session.get("id")

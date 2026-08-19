@@ -88,6 +88,7 @@ class CommissionCommentResponse(DtoModel):
     author_role: str
     body: str
     email_sent_at: datetime | None
+    email_error: str | None
     created_at: datetime
     updated_at: datetime
 

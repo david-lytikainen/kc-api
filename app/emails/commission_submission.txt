@@ -1,0 +1,5 @@
+Thanks for your commission request.
+
+Order number: {order_number}
+Open your order here:
+{link}

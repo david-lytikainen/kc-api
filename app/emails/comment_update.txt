@@ -1,0 +1,4 @@
+There is a new comment on order {order_number}.
+
+Open the order here:
+{link}
