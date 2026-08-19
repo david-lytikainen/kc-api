@@ -70,14 +70,40 @@ def try_get_current_admin_user(session: Session, authorization: str | None) -> b
     return True
 
 
+def get_s3_client():
+    return boto3.client("s3", region_name=AWS_REGION)
+
+
+def build_presigned_s3_url(s3_key: str | None, fallback_url: str = "") -> str:
+    if not s3_key or not AWS_REGION or not S3_BUCKET:
+        return fallback_url
+    try:
+        return get_s3_client().generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": s3_key}, ExpiresIn=3600)
+    except Exception:
+        return fallback_url
+
+
+def send_plain_email(recipient: str, subject: str, body: str) -> bool:
+    if not recipient or not MAIL_SERVER or not MAIL_USERNAME:
+        return False
+    message = EmailMessage()
+    message["From"] = MAIL_USERNAME
+    message["To"] = recipient
+    message["Subject"] = subject
+    message.set_content(body)
+    try:
+        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
+            server.starttls()
+            if MAIL_USERNAME and MAIL_PASSWORD:
+                server.login(MAIL_USERNAME, MAIL_PASSWORD)
+            server.send_message(message)
+    except Exception:
+        return False
+    return True
+
+
 def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
-    image_url = item.image_url
-    if item.s3_key and AWS_REGION and S3_BUCKET:
-        try:
-            client = boto3.client("s3", region_name=AWS_REGION)
-            image_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": item.s3_key}, ExpiresIn=3600)
-        except Exception:
-            image_url = item.image_url
+    image_url = build_presigned_s3_url(item.s3_key, item.image_url)
     return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, price_cents=item.price_cents, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at)
 
 
@@ -110,27 +136,14 @@ def build_order_response_for_request(session: Session, order: CommissionRequest,
     category_name = category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom"
     response_files: list[CommissionFileResponse] = []
     for file in files:
-        file_url = ""
-        if file.s3_key and AWS_REGION and S3_BUCKET:
-            try:
-                client = boto3.client("s3", region_name=AWS_REGION)
-                file_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": file.s3_key}, ExpiresIn=3600)
-            except Exception:
-                file_url = ""
+        file_url = build_presigned_s3_url(file.s3_key)
         response_files.append(CommissionFileResponse(id=file.id, file_name=file.file_name, file_url=file_url, content_type=file.content_type, size_bytes=file.size_bytes, created_at=file.created_at))
     return CommissionOrderResponse(order_kind="commission", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, gallery_item_id=None, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, gallery_image_url=None, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
 
 
 def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_is_admin: bool) -> CommissionOrderResponse:
-    image_url = order.item_image_url
-    if order.gallery_item_id:
-        item = session.get(GalleryItem, order.gallery_item_id)
-        if item and item.s3_key and AWS_REGION and S3_BUCKET:
-            try:
-                client = boto3.client("s3", region_name=AWS_REGION)
-                image_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": item.s3_key}, ExpiresIn=3600)
-            except Exception:
-                image_url = order.item_image_url
+    item = session.get(GalleryItem, order.gallery_item_id) if order.gallery_item_id else None
+    image_url = build_presigned_s3_url(item.s3_key if item else None, order.item_image_url)
     status = "payment_processing" if not order.is_paid else (order.status.name if order.status else STATUS_ACCEPTED)
     response_files = [CommissionFileResponse(id=order.id, file_name=order.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=order.created_at)] if image_url else []
     comments = load_gallery_order_comments(session, order.id)
@@ -138,40 +151,21 @@ def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_i
 
 
 def build_gallery_inquiry_response(session: Session, inquiry: GalleryInquiry, viewer_is_admin: bool) -> CommissionOrderResponse:
-    image_url = inquiry.item_image_url
-    if inquiry.gallery_item_id:
-        item = session.get(GalleryItem, inquiry.gallery_item_id)
-        if item and item.s3_key and AWS_REGION and S3_BUCKET:
-            try:
-                client = boto3.client("s3", region_name=AWS_REGION)
-                image_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": item.s3_key}, ExpiresIn=3600)
-            except Exception:
-                image_url = inquiry.item_image_url
+    item = session.get(GalleryItem, inquiry.gallery_item_id) if inquiry.gallery_item_id else None
+    image_url = build_presigned_s3_url(item.s3_key if item else None, inquiry.item_image_url)
     comments = load_gallery_inquiry_comments(session, inquiry.id)
     response_files = [CommissionFileResponse(id=inquiry.id, file_name=inquiry.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=inquiry.created_at)] if image_url else []
     return CommissionOrderResponse(order_kind="gallery_inquiry", order_number=inquiry.order_number, customer_name=inquiry.customer_name, customer_email=inquiry.customer_email, customer_phone="", gallery_item_id=inquiry.gallery_item_id, category_name=inquiry.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=STATUS_SUBMITTED, quote_amount_cents=inquiry.amount_cents, gallery_image_url=image_url, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=None, created_at=inquiry.created_at, updated_at=inquiry.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
 
 
 def send_order_status_email(recipient: str, order_number: str, status: str) -> None:
-    if not recipient or not MAIL_SERVER or not MAIL_USERNAME:
-        return
     link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order_number}"
-    message = EmailMessage()
-    message["From"] = MAIL_USERNAME
-    message["To"] = recipient
-    message["Subject"] = f"Order {order_number} status update"
-    message.set_content(
+    send_plain_email(
+        recipient,
+        f"Order {order_number} status update",
         f"Your order status changed to {status}.\n\n"
         f"Open your order here:\n{link}\n"
     )
-    try:
-        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
-            server.starttls()
-            if MAIL_USERNAME and MAIL_PASSWORD:
-                server.login(MAIL_USERNAME, MAIL_PASSWORD)
-            server.send_message(message)
-    except Exception:
-        pass
 
 
 def get_order_or_404(session: Session, order_number: str) -> CommissionRequest:
@@ -394,28 +388,14 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
         session.commit()
         session.refresh(order)
         if prepared_files:
-            client = boto3.client("s3", region_name=AWS_REGION)
+            client = get_s3_client()
             for file, content in prepared_files:
                 key = f"commissions/{order.order_number}/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
                 client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=file.content_type)
                 session.add(CommissionFile(commission_request_id=order.id, file_name=file.filename or "reference-image", s3_key=key, content_type=file.content_type, size_bytes=len(content)))
             session.commit()
-        if MAIL_SERVER and MAIL_USERNAME:
-            link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}"
-            message = EmailMessage()
-            message["From"] = MAIL_USERNAME
-            message["To"] = order.customer_email
-            message["Subject"] = f"Your commission request {order.order_number}"
-            message.set_content(
-                f"Thanks for your commission request.\n\n"
-                f"Order number: {order.order_number}\n"
-                f"Open your order here:\n{link}\n"
-            )
-            with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
-                server.starttls()
-                if MAIL_USERNAME and MAIL_PASSWORD:
-                    server.login(MAIL_USERNAME, MAIL_PASSWORD)
-                server.send_message(message)
+        link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}"
+        send_plain_email(order.customer_email, f"Your commission request {order.order_number}", f"Thanks for your commission request.\n\nOrder number: {order.order_number}\nOpen your order here:\n{link}\n")
         return build_order_response_for_request(session, order, viewer_is_admin=False)
 
 
@@ -454,22 +434,9 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
                 session.commit()
                 session.refresh(comment)
                 recipient = gallery_order.customer_email if author_role.name == ROLE_ADMIN else ADMIN_EMAIL
-                if recipient and MAIL_SERVER and MAIL_USERNAME:
+                if recipient:
                     link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{gallery_order.order_number}#comment-{comment.id}"
-                    message = EmailMessage()
-                    message["From"] = MAIL_USERNAME
-                    message["To"] = recipient
-                    message["Subject"] = f"Comment update for order {gallery_order.order_number}"
-                    message.set_content(f"There is a new comment on order {gallery_order.order_number}.\n\nOpen the order here:\n{link}\n")
-                    try:
-                        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
-                            server.starttls()
-                            if MAIL_USERNAME and MAIL_PASSWORD:
-                                server.login(MAIL_USERNAME, MAIL_PASSWORD)
-                            server.send_message(message)
-                    except Exception:
-                        pass
-                    else:
+                    if send_plain_email(recipient, f"Comment update for order {gallery_order.order_number}", f"There is a new comment on order {gallery_order.order_number}.\n\nOpen the order here:\n{link}\n"):
                         comment.email_sent_at = datetime.now(timezone.utc)
                         session.commit()
                         session.refresh(comment)
@@ -487,22 +454,9 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
         session.commit()
         session.refresh(comment)
         recipient = order.customer_email if author_role.name == ROLE_ADMIN else ADMIN_EMAIL
-        if recipient and MAIL_SERVER and MAIL_USERNAME:
+        if recipient:
             link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}#comment-{comment.id}"
-            message = EmailMessage()
-            message["From"] = MAIL_USERNAME
-            message["To"] = recipient
-            message["Subject"] = f"Comment update for order {order.order_number}"
-            message.set_content(f"There is a new comment on order {order.order_number}.\n\nOpen the order here:\n{link}\n")
-            try:
-                with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
-                    server.starttls()
-                    if MAIL_USERNAME and MAIL_PASSWORD:
-                        server.login(MAIL_USERNAME, MAIL_PASSWORD)
-                    server.send_message(message)
-            except Exception:
-                pass
-            else:
+            if send_plain_email(recipient, f"Comment update for order {order.order_number}", f"There is a new comment on order {order.order_number}.\n\nOpen the order here:\n{link}\n"):
                 comment.email_sent_at = datetime.now(timezone.utc)
                 session.commit()
                 session.refresh(comment)
@@ -771,25 +725,9 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
             order.shipping_country = shipping_address.get("country")
             session.commit()
             session.refresh(order)
-            if order.customer_email and MAIL_SERVER and MAIL_USERNAME:
+            if order.customer_email:
                 link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}"
-                message = EmailMessage()
-                message["From"] = MAIL_USERNAME
-                message["To"] = order.customer_email
-                message["Subject"] = f"Your gallery order {order.order_number}"
-                message.set_content(
-                    f"Thanks for your gallery purchase.\n\n"
-                    f"Order number: {order.order_number}\n"
-                    f"Open your order here:\n{link}\n"
-                )
-                try:
-                    with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
-                        server.starttls()
-                        if MAIL_USERNAME and MAIL_PASSWORD:
-                            server.login(MAIL_USERNAME, MAIL_PASSWORD)
-                        server.send_message(message)
-                except Exception:
-                    pass
+                send_plain_email(order.customer_email, f"Your gallery order {order.order_number}", f"Thanks for your gallery purchase.\n\nOrder number: {order.order_number}\nOpen your order here:\n{link}\n")
         return {"received": True}
     order_number = checkout_session.get("metadata", {}).get("order_number")
     checkout_session_id = checkout_session.get("id")
@@ -908,7 +846,7 @@ def create_gallery_item(
             if not AWS_REGION or not S3_BUCKET:
                 raise HTTPException(status_code=400, detail="S3 upload is not configured.")
             key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
-            client = boto3.client("s3", region_name=AWS_REGION)
+            client = get_s3_client()
             client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=file.content_type)
             item.image_url = ""
             item.s3_key = key
@@ -959,7 +897,7 @@ def update_gallery_item(
             if not AWS_REGION or not S3_BUCKET:
                 raise HTTPException(status_code=400, detail="S3 upload is not configured.")
             key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
-            client = boto3.client("s3", region_name=AWS_REGION)
+            client = get_s3_client()
             client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=file.content_type)
             item.image_url = ""
             item.s3_key = key
