@@ -14,7 +14,7 @@ import stripe
 
 from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
 from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, StatusUpdateRequest, UserResponse
-from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryInquiry, GalleryInquiryComment, GalleryItem, GalleryOrder, Role
+from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryInquiry, GalleryInquiryComment, GalleryItem, GalleryOrder, GalleryOrderComment, Role
 
 
 router = APIRouter()
@@ -29,7 +29,7 @@ def status_name(order: CommissionRequest) -> str:
     return order.status.name
 
 
-def comment_role_name(comment: CommissionComment | GalleryInquiryComment) -> str:
+def comment_role_name(comment: CommissionComment | GalleryInquiryComment | GalleryOrderComment) -> str:
     return comment.author_role.name
 
 
@@ -93,7 +93,11 @@ def load_gallery_inquiry_comments(session: Session, inquiry_id: int) -> list[Gal
     return session.scalars(select(GalleryInquiryComment).where(GalleryInquiryComment.gallery_inquiry_id == inquiry_id).order_by(GalleryInquiryComment.created_at.asc(), GalleryInquiryComment.id.asc())).all()
 
 
-def build_comment_response_for_order(comment: CommissionComment | GalleryInquiryComment) -> CommissionCommentResponse:
+def load_gallery_order_comments(session: Session, order_id: int) -> list[GalleryOrderComment]:
+    return session.scalars(select(GalleryOrderComment).where(GalleryOrderComment.gallery_order_id == order_id).order_by(GalleryOrderComment.created_at.asc(), GalleryOrderComment.id.asc())).all()
+
+
+def build_comment_response_for_order(comment: CommissionComment | GalleryInquiryComment | GalleryOrderComment) -> CommissionCommentResponse:
     return CommissionCommentResponse(id=comment.id, author_role=comment_role_name(comment), body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at)
 
 
@@ -129,7 +133,8 @@ def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_i
                 image_url = order.item_image_url
     status = "payment_processing" if not order.is_paid else (order.status.name if order.status else STATUS_ACCEPTED)
     response_files = [CommissionFileResponse(id=order.id, file_name=order.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=order.created_at)] if image_url else []
-    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", gallery_item_id=order.gallery_item_id, category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[])
+    comments = load_gallery_order_comments(session, order.id)
+    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", gallery_item_id=order.gallery_item_id, category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
 
 
 def build_gallery_inquiry_response(session: Session, inquiry: GalleryInquiry, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -171,6 +176,13 @@ def get_order_comment_or_404(session: Session, order: CommissionRequest, comment
 def get_gallery_inquiry_comment_or_404(session: Session, inquiry: GalleryInquiry, comment_id: int) -> GalleryInquiryComment:
     comment = session.get(GalleryInquiryComment, comment_id)
     if not comment or comment.gallery_inquiry_id != inquiry.id:
+        raise HTTPException(status_code=404, detail="Comment not found.")
+    return comment
+
+
+def get_gallery_order_comment_or_404(session: Session, order: GalleryOrder, comment_id: int) -> GalleryOrderComment:
+    comment = session.get(GalleryOrderComment, comment_id)
+    if not comment or comment.gallery_order_id != order.id:
         raise HTTPException(status_code=404, detail="Comment not found.")
     return comment
 
@@ -411,6 +423,35 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
             raise HTTPException(status_code=400, detail="Comment body is required.")
         order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
         if not order:
+            gallery_order = session.scalar(select(GalleryOrder).where(GalleryOrder.order_number == order_number))
+            if gallery_order:
+                if not gallery_order.is_paid:
+                    raise HTTPException(status_code=400, detail="Gallery payment is still processing.")
+                comment = GalleryOrderComment(gallery_order_id=gallery_order.id, author_role_id=author_role.id, body=body)
+                session.add(comment)
+                session.commit()
+                session.refresh(comment)
+                recipient = gallery_order.customer_email if author_role.name == ROLE_ADMIN else ADMIN_EMAIL
+                if recipient and MAIL_SERVER and MAIL_USERNAME:
+                    link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{gallery_order.order_number}#comment-{comment.id}"
+                    message = EmailMessage()
+                    message["From"] = MAIL_USERNAME
+                    message["To"] = recipient
+                    message["Subject"] = f"Comment update for order {gallery_order.order_number}"
+                    message.set_content(f"There is a new comment on order {gallery_order.order_number}.\n\nOpen the order here:\n{link}\n")
+                    try:
+                        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
+                            server.starttls()
+                            if MAIL_USERNAME and MAIL_PASSWORD:
+                                server.login(MAIL_USERNAME, MAIL_PASSWORD)
+                            server.send_message(message)
+                    except Exception:
+                        pass
+                    else:
+                        comment.email_sent_at = datetime.now(timezone.utc)
+                        session.commit()
+                        session.refresh(comment)
+                return build_comment_response_for_order(comment)
             inquiry = session.scalar(select(GalleryInquiry).where(GalleryInquiry.order_number == order_number))
             if not inquiry:
                 raise HTTPException(status_code=404, detail="Order not found.")
@@ -456,6 +497,15 @@ def update_comment(order_number: str, comment_id: int, payload: CommissionCommen
             raise HTTPException(status_code=400, detail="Comment body is required.")
         order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
         if not order:
+            gallery_order = session.scalar(select(GalleryOrder).where(GalleryOrder.order_number == order_number))
+            if gallery_order:
+                comment = get_gallery_order_comment_or_404(session, gallery_order, comment_id)
+                if comment_role_name(comment) != actor_role:
+                    raise HTTPException(status_code=403, detail="You can only edit your own role comments.")
+                comment.body = body
+                session.commit()
+                session.refresh(comment)
+                return build_comment_response_for_order(comment)
             inquiry = session.scalar(select(GalleryInquiry).where(GalleryInquiry.order_number == order_number))
             if not inquiry:
                 raise HTTPException(status_code=404, detail="Order not found.")
@@ -482,6 +532,14 @@ def delete_comment(order_number: str, comment_id: int, authorization: str | None
         actor_role = ROLE_ADMIN if admin_user else ROLE_CUSTOMER
         order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
         if not order:
+            gallery_order = session.scalar(select(GalleryOrder).where(GalleryOrder.order_number == order_number))
+            if gallery_order:
+                comment = get_gallery_order_comment_or_404(session, gallery_order, comment_id)
+                if comment_role_name(comment) != actor_role:
+                    raise HTTPException(status_code=403, detail="You can only delete your own role comments.")
+                session.delete(comment)
+                session.commit()
+                return {"status": "deleted"}
             inquiry = session.scalar(select(GalleryInquiry).where(GalleryInquiry.order_number == order_number))
             if not inquiry:
                 raise HTTPException(status_code=404, detail="Order not found.")

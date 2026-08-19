@@ -163,3 +163,16 @@ class GalleryInquiryComment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     author_role: Mapped[Role] = relationship()
+
+
+class GalleryOrderComment(Base):
+    __tablename__ = "gallery_order_comments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    gallery_order_id: Mapped[int] = mapped_column(ForeignKey("gallery_orders.id"), nullable=False, index=True)
+    author_role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False, index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    author_role: Mapped[Role] = relationship()
