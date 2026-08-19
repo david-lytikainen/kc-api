@@ -292,6 +292,14 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
     with SessionLocal() as session:
         submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
         order_number = generate_order_number(session)
+        customer_name_value = customer_name.strip()
+        customer_email_value = customer_email.strip().lower()
+        customer_phone_value = customer_phone.strip()
+        instructions_value = instructions.strip()
+        medium_value = medium.strip()
+        size_value = size.strip()
+        if not customer_name_value or not customer_email_value or not customer_phone_value or not instructions_value or not medium_value or not size_value:
+            raise HTTPException(status_code=400, detail="Name, email, phone, category, instructions, medium, and size are required.")
         selected_category: CommissionCategory | None = None
         custom_category = custom_category_name.strip() or None
         if category_id:
@@ -308,7 +316,7 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
         if upload_files and (not AWS_REGION or not S3_BUCKET):
             raise HTTPException(status_code=400, detail="Commission uploads are not configured.")
         prepared_files = await read_commission_uploads(upload_files)
-        order = CommissionRequest(order_number=order_number, customer_name=customer_name.strip(), customer_email=customer_email.lower(), customer_phone=customer_phone.strip(), category_id=selected_category.id if selected_category else None, custom_category_name=custom_category, instructions=instructions.strip(), medium=medium.strip(), size=size.strip(), status_id=submitted_status.id)
+        order = CommissionRequest(order_number=order_number, customer_name=customer_name_value, customer_email=customer_email_value, customer_phone=customer_phone_value, category_id=selected_category.id if selected_category else None, custom_category_name=custom_category, instructions=instructions_value, medium=medium_value, size=size_value, status_id=submitted_status.id)
         session.add(order)
         session.commit()
         session.refresh(order)
