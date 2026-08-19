@@ -159,6 +159,30 @@ VALUES
     ('delivered')
 ON CONFLICT (name) DO NOTHING;
 
+ALTER TABLE commission_requests
+    ADD COLUMN IF NOT EXISTS customer_confirmed_at TIMESTAMPTZ;
+
+ALTER TABLE gallery_orders
+    ADD COLUMN IF NOT EXISTS customer_confirmed_at TIMESTAMPTZ;
+
+ALTER TABLE commission_comments
+    ADD COLUMN IF NOT EXISTS email_error TEXT;
+
+ALTER TABLE gallery_inquiry_comments
+    ADD COLUMN IF NOT EXISTS email_error TEXT;
+
+ALTER TABLE gallery_order_comments
+    ADD COLUMN IF NOT EXISTS email_error TEXT;
+
+INSERT INTO gallery_item_images (gallery_item_id, image_url, s3_key, display_order)
+SELECT gallery_items.id, gallery_items.image_url, gallery_items.s3_key, 10
+FROM gallery_items
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM gallery_item_images
+    WHERE gallery_item_images.gallery_item_id = gallery_items.id
+);
+
 CREATE INDEX IF NOT EXISTS ix_gallery_items_display_order ON gallery_items (display_order);
 CREATE INDEX IF NOT EXISTS ix_gallery_items_is_published ON gallery_items (is_published);
 CREATE INDEX IF NOT EXISTS ix_gallery_item_images_gallery_item_id ON gallery_item_images (gallery_item_id);
