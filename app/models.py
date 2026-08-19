@@ -135,3 +135,31 @@ class GalleryOrder(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     status: Mapped[CommissionStatusType | None] = relationship()
+
+
+class GalleryInquiry(Base):
+    __tablename__ = "gallery_inquiries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_number: Mapped[str] = mapped_column(String(6), nullable=False, unique=True, index=True)
+    gallery_item_id: Mapped[int | None] = mapped_column(ForeignKey("gallery_items.id"), nullable=True, index=True)
+    item_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    item_image_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    customer_name: Mapped[str] = mapped_column(String(255), nullable=False, default="Customer")
+    customer_email: Mapped[str] = mapped_column(String(255), nullable=False, default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class GalleryInquiryComment(Base):
+    __tablename__ = "gallery_inquiry_comments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    gallery_inquiry_id: Mapped[int] = mapped_column(ForeignKey("gallery_inquiries.id"), nullable=False, index=True)
+    author_role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False, index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    author_role: Mapped[Role] = relationship()

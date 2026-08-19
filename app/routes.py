@@ -14,7 +14,7 @@ import stripe
 
 from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
 from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, StatusUpdateRequest, UserResponse
-from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryItem, GalleryOrder, Role
+from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryInquiry, GalleryInquiryComment, GalleryItem, GalleryOrder, Role
 
 
 router = APIRouter()
@@ -29,7 +29,7 @@ def status_name(order: CommissionRequest) -> str:
     return order.status.name
 
 
-def comment_role_name(comment: CommissionComment) -> str:
+def comment_role_name(comment: CommissionComment | GalleryInquiryComment) -> str:
     return comment.author_role.name
 
 
@@ -89,7 +89,11 @@ def load_order_comments(session: Session, order_id: int) -> list[CommissionComme
     return session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order_id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
 
 
-def build_comment_response_for_order(comment: CommissionComment, comments: list[CommissionComment]) -> CommissionCommentResponse:
+def load_gallery_inquiry_comments(session: Session, inquiry_id: int) -> list[GalleryInquiryComment]:
+    return session.scalars(select(GalleryInquiryComment).where(GalleryInquiryComment.gallery_inquiry_id == inquiry_id).order_by(GalleryInquiryComment.created_at.asc(), GalleryInquiryComment.id.asc())).all()
+
+
+def build_comment_response_for_order(comment: CommissionComment | GalleryInquiryComment) -> CommissionCommentResponse:
     return CommissionCommentResponse(id=comment.id, author_role=comment_role_name(comment), body=comment.body, email_sent_at=comment.email_sent_at, created_at=comment.created_at, updated_at=comment.updated_at)
 
 
@@ -110,7 +114,7 @@ def build_order_response_for_request(session: Session, order: CommissionRequest,
             except Exception:
                 file_url = ""
         response_files.append(CommissionFileResponse(id=file.id, file_name=file.file_name, file_url=file_url, content_type=file.content_type, size_bytes=file.size_bytes, created_at=file.created_at))
-    return CommissionOrderResponse(order_kind="commission", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, gallery_image_url=None, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment, comments) for comment in comments])
+    return CommissionOrderResponse(order_kind="commission", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, gallery_item_id=None, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, gallery_image_url=None, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
 
 
 def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -125,7 +129,22 @@ def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_i
                 image_url = order.item_image_url
     status = "payment_processing" if not order.is_paid else (order.status.name if order.status else STATUS_ACCEPTED)
     response_files = [CommissionFileResponse(id=order.id, file_name=order.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=order.created_at)] if image_url else []
-    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[])
+    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", gallery_item_id=order.gallery_item_id, category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[])
+
+
+def build_gallery_inquiry_response(session: Session, inquiry: GalleryInquiry, viewer_is_admin: bool) -> CommissionOrderResponse:
+    image_url = inquiry.item_image_url
+    if inquiry.gallery_item_id:
+        item = session.get(GalleryItem, inquiry.gallery_item_id)
+        if item and item.s3_key and AWS_REGION and S3_BUCKET:
+            try:
+                client = boto3.client("s3", region_name=AWS_REGION)
+                image_url = client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": item.s3_key}, ExpiresIn=3600)
+            except Exception:
+                image_url = inquiry.item_image_url
+    comments = load_gallery_inquiry_comments(session, inquiry.id)
+    response_files = [CommissionFileResponse(id=inquiry.id, file_name=inquiry.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=inquiry.created_at)] if image_url else []
+    return CommissionOrderResponse(order_kind="gallery_inquiry", order_number=inquiry.order_number, customer_name=inquiry.customer_name, customer_email=inquiry.customer_email, customer_phone="", gallery_item_id=inquiry.gallery_item_id, category_name=inquiry.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=STATUS_SUBMITTED, quote_amount_cents=inquiry.amount_cents, gallery_image_url=image_url, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, created_at=inquiry.created_at, updated_at=inquiry.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
 
 
 def get_order_or_404(session: Session, order_number: str) -> CommissionRequest:
@@ -135,9 +154,23 @@ def get_order_or_404(session: Session, order_number: str) -> CommissionRequest:
     return order
 
 
+def get_gallery_inquiry_or_404(session: Session, order_number: str) -> GalleryInquiry:
+    inquiry = session.scalar(select(GalleryInquiry).where(GalleryInquiry.order_number == order_number))
+    if not inquiry:
+        raise HTTPException(status_code=404, detail="Order not found.")
+    return inquiry
+
+
 def get_order_comment_or_404(session: Session, order: CommissionRequest, comment_id: int) -> CommissionComment:
     comment = session.get(CommissionComment, comment_id)
     if not comment or comment.commission_request_id != order.id:
+        raise HTTPException(status_code=404, detail="Comment not found.")
+    return comment
+
+
+def get_gallery_inquiry_comment_or_404(session: Session, inquiry: GalleryInquiry, comment_id: int) -> GalleryInquiryComment:
+    comment = session.get(GalleryInquiryComment, comment_id)
+    if not comment or comment.gallery_inquiry_id != inquiry.id:
         raise HTTPException(status_code=404, detail="Comment not found.")
     return comment
 
@@ -155,7 +188,8 @@ def generate_order_number(session: Session) -> str:
         candidate = str(secrets.randbelow(900000) + 100000)
         existing_commission = session.scalar(select(CommissionRequest.id).where(CommissionRequest.order_number == candidate))
         existing_gallery = session.scalar(select(GalleryOrder.id).where(GalleryOrder.order_number == candidate))
-        if not existing_commission and not existing_gallery:
+        existing_inquiry = session.scalar(select(GalleryInquiry.id).where(GalleryInquiry.order_number == candidate))
+        if not existing_commission and not existing_gallery and not existing_inquiry:
             return candidate
     raise HTTPException(status_code=500, detail="Unable to generate a unique order number.")
 
@@ -231,10 +265,10 @@ def create_category(payload: CategoryCreateRequest, authorization: str | None = 
         get_current_admin_user(session, authorization)
         name = payload.name.strip()
         if not name:
-            raise HTTPException(status_code=400, detail="Category name is required.")
+            raise HTTPException(status_code=400, detail="Service name is required.")
         existing = session.scalar(select(CommissionCategory).where(func.lower(CommissionCategory.name) == name.lower()))
         if existing:
-            raise HTTPException(status_code=400, detail="Category already exists.")
+            raise HTTPException(status_code=400, detail="Service already exists.")
         category = CommissionCategory(name=name)
         session.add(category)
         session.commit()
@@ -248,13 +282,13 @@ def update_category(category_id: int, payload: CategoryUpdateRequest, authorizat
         get_current_admin_user(session, authorization)
         category = session.get(CommissionCategory, category_id)
         if not category:
-            raise HTTPException(status_code=404, detail="Category not found.")
+            raise HTTPException(status_code=404, detail="Service not found.")
         name = payload.name.strip()
         if not name:
-            raise HTTPException(status_code=400, detail="Category name is required.")
+            raise HTTPException(status_code=400, detail="Service name is required.")
         existing = session.scalar(select(CommissionCategory).where(func.lower(CommissionCategory.name) == name.lower(), CommissionCategory.id != category_id))
         if existing:
-            raise HTTPException(status_code=400, detail="Category already exists.")
+            raise HTTPException(status_code=400, detail="Service already exists.")
         category.name = name
         category.is_archived = payload.is_archived
         session.commit()
@@ -268,9 +302,11 @@ def list_admin_orders(page: int = Query(default=1, ge=1), page_size: int = Query
         get_current_admin_user(session, authorization)
         commission_total = session.scalar(select(func.count()).select_from(CommissionRequest)) or 0
         gallery_total = session.scalar(select(func.count()).select_from(GalleryOrder).where(GalleryOrder.is_paid.is_(True))) or 0
-        total = commission_total + gallery_total
+        inquiry_total = session.scalar(select(func.count()).select_from(GalleryInquiry)) or 0
+        total = commission_total + gallery_total + inquiry_total
         commission_orders = session.scalars(select(CommissionRequest).order_by(CommissionRequest.created_at.desc(), CommissionRequest.id.desc())).all()
         gallery_orders = session.scalars(select(GalleryOrder).where(GalleryOrder.is_paid.is_(True)).order_by(GalleryOrder.created_at.desc(), GalleryOrder.id.desc())).all()
+        gallery_inquiries = session.scalars(select(GalleryInquiry).order_by(GalleryInquiry.created_at.desc(), GalleryInquiry.id.desc())).all()
         category_ids = [order.category_id for order in commission_orders if order.category_id]
         categories = session.scalars(select(CommissionCategory).where(CommissionCategory.id.in_(category_ids))).all() if category_ids else []
         category_by_id = {category.id: category for category in categories}
@@ -280,6 +316,9 @@ def list_admin_orders(page: int = Query(default=1, ge=1), page_size: int = Query
         ] + [
             CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="gallery", customer_name=order.customer_name, category_name=order.item_title, status=order.status.name if order.status else STATUS_ACCEPTED, amount_cents=order.amount_cents, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
             for order in gallery_orders
+        ] + [
+            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="gallery_inquiry", customer_name=order.customer_name, category_name=order.item_title, status=STATUS_SUBMITTED, amount_cents=order.amount_cents, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
+            for order in gallery_inquiries
         ]
         summaries.sort(key=lambda order: (order.created_at, order.order_number), reverse=True)
         start = (page - 1) * page_size
@@ -299,17 +338,17 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
         medium_value = medium.strip()
         size_value = size.strip()
         if not customer_name_value or not customer_email_value or not customer_phone_value or not instructions_value or not medium_value or not size_value:
-            raise HTTPException(status_code=400, detail="Name, email, phone, category, instructions, medium, and size are required.")
+            raise HTTPException(status_code=400, detail="Name, email, phone, service, instructions, medium, and size are required.")
         selected_category: CommissionCategory | None = None
         custom_category = custom_category_name.strip() or None
         if category_id:
             selected_category = session.get(CommissionCategory, category_id)
             if not selected_category:
-                raise HTTPException(status_code=404, detail="Category not found.")
+                raise HTTPException(status_code=404, detail="Service not found.")
             if selected_category.is_archived:
-                raise HTTPException(status_code=400, detail="Archived categories cannot be selected.")
+                raise HTTPException(status_code=400, detail="Archived services cannot be selected.")
         elif not custom_category:
-            raise HTTPException(status_code=400, detail="Category selection is required.")
+            raise HTTPException(status_code=400, detail="Service selection is required.")
         upload_files = files or []
         if len(upload_files) > 5:
             raise HTTPException(status_code=400, detail="You can upload at most 5 reference images.")
@@ -356,6 +395,9 @@ def get_order(order_number: str, authorization: str | None = Header(default=None
         gallery_order = session.scalar(select(GalleryOrder).where(GalleryOrder.order_number == order_number))
         if gallery_order:
             return build_gallery_order_response(session, gallery_order, viewer_is_admin=bool(admin_user))
+        gallery_inquiry = session.scalar(select(GalleryInquiry).where(GalleryInquiry.order_number == order_number))
+        if gallery_inquiry:
+            return build_gallery_inquiry_response(session, gallery_inquiry, viewer_is_admin=bool(admin_user))
         raise HTTPException(status_code=404, detail="Order not found.")
 
 
@@ -364,10 +406,19 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
     with SessionLocal() as session:
         admin_user = try_get_current_admin_user(session, authorization)
         author_role = get_role_by_name(session, ROLE_ADMIN if admin_user else ROLE_CUSTOMER)
-        order = get_order_or_404(session, order_number)
         body = payload.body.strip()
         if not body:
             raise HTTPException(status_code=400, detail="Comment body is required.")
+        order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
+        if not order:
+            inquiry = session.scalar(select(GalleryInquiry).where(GalleryInquiry.order_number == order_number))
+            if not inquiry:
+                raise HTTPException(status_code=404, detail="Order not found.")
+            comment = GalleryInquiryComment(gallery_inquiry_id=inquiry.id, author_role_id=author_role.id, body=body)
+            session.add(comment)
+            session.commit()
+            session.refresh(comment)
+            return build_comment_response_for_order(comment)
         comment = CommissionComment(commission_request_id=order.id, author_role_id=author_role.id, body=body)
         session.add(comment)
         session.commit()
@@ -392,8 +443,7 @@ def create_comment(order_number: str, payload: CommissionCommentRequest, authori
                 comment.email_sent_at = datetime.now(timezone.utc)
                 session.commit()
                 session.refresh(comment)
-        comments = load_order_comments(session, order.id)
-        return build_comment_response_for_order(comment, comments)
+        return build_comment_response_for_order(comment)
 
 
 @router.patch("/orders/{order_number}/comments/{comment_id}", response_model=CommissionCommentResponse)
@@ -401,18 +451,28 @@ def update_comment(order_number: str, comment_id: int, payload: CommissionCommen
     with SessionLocal() as session:
         admin_user = try_get_current_admin_user(session, authorization)
         actor_role = ROLE_ADMIN if admin_user else ROLE_CUSTOMER
-        order = get_order_or_404(session, order_number)
-        comment = get_order_comment_or_404(session, order, comment_id)
-        if comment_role_name(comment) != actor_role:
-            raise HTTPException(status_code=403, detail="You can only edit your own role comments.")
         body = payload.body.strip()
         if not body:
             raise HTTPException(status_code=400, detail="Comment body is required.")
+        order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
+        if not order:
+            inquiry = session.scalar(select(GalleryInquiry).where(GalleryInquiry.order_number == order_number))
+            if not inquiry:
+                raise HTTPException(status_code=404, detail="Order not found.")
+            comment = get_gallery_inquiry_comment_or_404(session, inquiry, comment_id)
+            if comment_role_name(comment) != actor_role:
+                raise HTTPException(status_code=403, detail="You can only edit your own role comments.")
+            comment.body = body
+            session.commit()
+            session.refresh(comment)
+            return build_comment_response_for_order(comment)
+        comment = get_order_comment_or_404(session, order, comment_id)
+        if comment_role_name(comment) != actor_role:
+            raise HTTPException(status_code=403, detail="You can only edit your own role comments.")
         comment.body = body
         session.commit()
         session.refresh(comment)
-        comments = load_order_comments(session, order.id)
-        return build_comment_response_for_order(comment, comments)
+        return build_comment_response_for_order(comment)
 
 
 @router.delete("/orders/{order_number}/comments/{comment_id}")
@@ -420,7 +480,17 @@ def delete_comment(order_number: str, comment_id: int, authorization: str | None
     with SessionLocal() as session:
         admin_user = try_get_current_admin_user(session, authorization)
         actor_role = ROLE_ADMIN if admin_user else ROLE_CUSTOMER
-        order = get_order_or_404(session, order_number)
+        order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
+        if not order:
+            inquiry = session.scalar(select(GalleryInquiry).where(GalleryInquiry.order_number == order_number))
+            if not inquiry:
+                raise HTTPException(status_code=404, detail="Order not found.")
+            comment = get_gallery_inquiry_comment_or_404(session, inquiry, comment_id)
+            if comment_role_name(comment) != actor_role:
+                raise HTTPException(status_code=403, detail="You can only delete your own role comments.")
+            session.delete(comment)
+            session.commit()
+            return {"status": "deleted"}
         comment = get_order_comment_or_404(session, order, comment_id)
         if comment_role_name(comment) != actor_role:
             raise HTTPException(status_code=403, detail="You can only delete your own role comments.")
@@ -459,6 +529,28 @@ def create_order_checkout(order_number: str) -> dict[str, str]:
         return {"url": checkout.url}
 
 
+@router.post("/gallery/{item_id}/inquiries", response_model=CommissionOrderResponse)
+def create_gallery_inquiry(item_id: int, payload: CommissionCommentRequest) -> CommissionOrderResponse:
+    with SessionLocal() as session:
+        item = session.get(GalleryItem, item_id)
+        if not item or not item.is_published:
+            raise HTTPException(status_code=404, detail="Gallery item not found.")
+        body = payload.body.strip()
+        if not body:
+            raise HTTPException(status_code=400, detail="Question message is required.")
+        order_number = generate_order_number(session)
+        inquiry = GalleryInquiry(order_number=order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, customer_name="Customer", customer_email="")
+        session.add(inquiry)
+        session.commit()
+        session.refresh(inquiry)
+        author_role = get_role_by_name(session, ROLE_CUSTOMER)
+        comment = GalleryInquiryComment(gallery_inquiry_id=inquiry.id, author_role_id=author_role.id, body=body)
+        session.add(comment)
+        session.commit()
+        session.refresh(inquiry)
+        return build_gallery_inquiry_response(session, inquiry, viewer_is_admin=False)
+
+
 @router.post("/gallery/{item_id}/checkout")
 def create_gallery_checkout(item_id: int) -> dict[str, str]:
     with SessionLocal() as session:
@@ -481,6 +573,35 @@ def create_gallery_checkout(item_id: int) -> dict[str, str]:
         )
         submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
         session.add(GalleryOrder(order_number=order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, status_id=submitted_status.id, is_paid=False, customer_name="Customer", customer_email="", stripe_checkout_session_id=checkout.id))
+        session.commit()
+        return {"url": checkout.url}
+
+
+@router.post("/gallery-inquiries/{order_number}/checkout")
+def create_gallery_inquiry_checkout(order_number: str) -> dict[str, str]:
+    with SessionLocal() as session:
+        inquiry = get_gallery_inquiry_or_404(session, order_number)
+        if not inquiry.gallery_item_id:
+            raise HTTPException(status_code=400, detail="This inquiry cannot be purchased.")
+        item = session.get(GalleryItem, inquiry.gallery_item_id)
+        if not item or not item.is_published:
+            raise HTTPException(status_code=404, detail="Gallery item not found.")
+        if not item.price_cents:
+            raise HTTPException(status_code=400, detail="This gallery item is not for sale.")
+        if not STRIPE_SECRET_KEY:
+            raise HTTPException(status_code=400, detail="Stripe is not configured.")
+        purchase_order_number = generate_order_number(session)
+        checkout = stripe.checkout.Session.create(
+            mode="payment",
+            success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{purchase_order_number}",
+            cancel_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{inquiry.order_number}",
+            billing_address_collection="required",
+            shipping_address_collection={"allowed_countries": ["US", "CA", "GB", "AU", "NZ"]},
+            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": item.price_cents, "product_data": {"name": item.title}}}],
+            metadata={"order_kind": "gallery", "order_number": purchase_order_number, "gallery_item_id": str(item.id), "inquiry_order_number": inquiry.order_number},
+        )
+        submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
+        session.add(GalleryOrder(order_number=purchase_order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, status_id=submitted_status.id, is_paid=False, customer_name="Customer", customer_email="", stripe_checkout_session_id=checkout.id))
         session.commit()
         return {"url": checkout.url}
 

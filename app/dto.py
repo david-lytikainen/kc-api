@@ -124,6 +124,7 @@ class CommissionOrderResponse(DtoModel):
     customer_name: str
     customer_email: str
     customer_phone: str
+    gallery_item_id: int | None
     category_name: str
     category_id: int | None
     custom_category_name: str | None
