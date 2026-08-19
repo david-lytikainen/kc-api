@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 import stripe
 
 from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
-from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, StatusUpdateRequest, UserResponse
+from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryInquiryRequest, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, StatusUpdateRequest, UserResponse
 from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryInquiry, GalleryInquiryComment, GalleryItem, GalleryOrder, GalleryOrderComment, Role
 
 
@@ -564,16 +564,17 @@ def create_order_checkout(order_number: str) -> dict[str, str]:
 
 
 @router.post("/gallery/{item_id}/inquiries", response_model=CommissionOrderResponse)
-def create_gallery_inquiry(item_id: int, payload: CommissionCommentRequest) -> CommissionOrderResponse:
+def create_gallery_inquiry(item_id: int, payload: GalleryInquiryRequest) -> CommissionOrderResponse:
     with SessionLocal() as session:
         item = session.get(GalleryItem, item_id)
         if not item or not item.is_published:
             raise HTTPException(status_code=404, detail="Gallery item not found.")
+        customer_email = payload.customer_email.strip().lower()
         body = payload.body.strip()
-        if not body:
-            raise HTTPException(status_code=400, detail="Question message is required.")
+        if not customer_email or not body:
+            raise HTTPException(status_code=400, detail="Email and question message are required.")
         order_number = generate_order_number(session)
-        inquiry = GalleryInquiry(order_number=order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, customer_name="Customer", customer_email="")
+        inquiry = GalleryInquiry(order_number=order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, customer_name="Customer", customer_email=customer_email)
         session.add(inquiry)
         session.commit()
         session.refresh(inquiry)

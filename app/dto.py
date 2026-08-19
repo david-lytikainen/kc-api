@@ -78,6 +78,11 @@ class CommissionCommentRequest(DtoModel):
     body: str
 
 
+class GalleryInquiryRequest(DtoModel):
+    customer_email: EmailStr
+    body: str
+
+
 class CommissionCommentResponse(DtoModel):
     id: int
     author_role: str
