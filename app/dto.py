@@ -12,6 +12,14 @@ class DtoModel(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+class GalleryItemImageResponse(DtoModel):
+    id: int
+    image_url: str
+    source_image_url: str
+    s3_key: str | None
+    display_order: int
+
+
 class GalleryItemResponse(DtoModel):
     id: int
     title: str
@@ -23,6 +31,7 @@ class GalleryItemResponse(DtoModel):
     display_order: int
     created_at: datetime
     updated_at: datetime
+    images: list[GalleryItemImageResponse]
 
 
 class UserResponse(DtoModel):

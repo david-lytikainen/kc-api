@@ -111,6 +111,20 @@ class GalleryItem(Base):
     is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    images: Mapped[list["GalleryItemImage"]] = relationship(back_populates="gallery_item", cascade="all, delete-orphan", order_by="GalleryItemImage.display_order")
+
+
+class GalleryItemImage(Base):
+    __tablename__ = "gallery_item_images"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    gallery_item_id: Mapped[int] = mapped_column(ForeignKey("gallery_items.id"), nullable=False, index=True)
+    image_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    s3_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    gallery_item: Mapped[GalleryItem] = relationship(back_populates="images")
 
 
 class GalleryOrder(Base):

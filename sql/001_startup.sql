@@ -25,6 +25,16 @@ CREATE TABLE IF NOT EXISTS gallery_items (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS gallery_item_images (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    gallery_item_id INTEGER NOT NULL REFERENCES gallery_items (id) ON DELETE CASCADE,
+    image_url VARCHAR(1024) NOT NULL,
+    s3_key VARCHAR(512),
+    display_order INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS gallery_orders (
     id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     order_number VARCHAR(6) NOT NULL UNIQUE,
@@ -151,6 +161,8 @@ ON CONFLICT (name) DO NOTHING;
 
 CREATE INDEX IF NOT EXISTS ix_gallery_items_display_order ON gallery_items (display_order);
 CREATE INDEX IF NOT EXISTS ix_gallery_items_is_published ON gallery_items (is_published);
+CREATE INDEX IF NOT EXISTS ix_gallery_item_images_gallery_item_id ON gallery_item_images (gallery_item_id);
+CREATE INDEX IF NOT EXISTS ix_gallery_item_images_display_order ON gallery_item_images (display_order);
 CREATE INDEX IF NOT EXISTS ix_gallery_orders_order_number ON gallery_orders (order_number);
 CREATE INDEX IF NOT EXISTS ix_gallery_orders_gallery_item_id ON gallery_orders (gallery_item_id);
 CREATE INDEX IF NOT EXISTS ix_gallery_orders_status_id ON gallery_orders (status_id);

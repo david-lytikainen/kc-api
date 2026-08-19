@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 import stripe
 
 from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
-from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryInquiryRequest, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, StatusUpdateRequest, UserResponse
-from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryInquiry, GalleryInquiryComment, GalleryItem, GalleryOrder, GalleryOrderComment, Role
+from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryInquiryRequest, GalleryItemImageResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, StatusUpdateRequest, UserResponse
+from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryInquiry, GalleryInquiryComment, GalleryItem, GalleryItemImage, GalleryOrder, GalleryOrderComment, Role
 
 
 router = APIRouter()
@@ -111,7 +111,19 @@ def render_email_template(template_name: str, **context: str) -> str:
 
 def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
     image_url = build_presigned_s3_url(item.s3_key, item.image_url)
-    return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, price_cents=item.price_cents, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at)
+    images = [
+        GalleryItemImageResponse(
+            id=image.id,
+            image_url=build_presigned_s3_url(image.s3_key, image.image_url),
+            source_image_url=image.image_url,
+            s3_key=image.s3_key,
+            display_order=image.display_order,
+        )
+        for image in item.images
+    ]
+    if not images and (item.image_url or item.s3_key):
+        images = [GalleryItemImageResponse(id=0, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, display_order=10)]
+    return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, price_cents=item.price_cents, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at, images=images)
 
 
 def build_category_response(category: CommissionCategory) -> CategoryResponse:
@@ -279,7 +291,16 @@ def health() -> dict[str, str]:
 def list_gallery_items() -> list[GalleryItemResponse]:
     with SessionLocal() as session:
         items = session.scalars(select(GalleryItem).where(GalleryItem.is_published.is_(True)).order_by(GalleryItem.display_order.asc(), GalleryItem.id.asc())).all()
-    return [build_gallery_item_response(item) for item in items]
+        return [build_gallery_item_response(item) for item in items]
+
+
+@router.get("/gallery/{item_id}", response_model=GalleryItemResponse)
+def get_gallery_item(item_id: int) -> GalleryItemResponse:
+    with SessionLocal() as session:
+        item = session.get(GalleryItem, item_id)
+        if not item or not item.is_published:
+            raise HTTPException(status_code=404, detail="Gallery item not found.")
+        return build_gallery_item_response(item)
 
 
 @router.post("/auth/login", response_model=AuthResponse)
@@ -846,19 +867,23 @@ def create_gallery_item(
     title: str = Form(...),
     description: str = Form(...),
     price_amount: str = Form(default=""),
-    existing_image_url: str = Form(default=""),
-    existing_s3_key: str = Form(default=""),
-    file: UploadFile | None = File(default=None),
+    files: list[UploadFile] | None = File(default=None),
     authorization: str | None = Header(default=None),
 ) -> GalleryItemResponse:
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
+        uploaded_files = files or []
+        if not uploaded_files:
+            raise HTTPException(status_code=400, detail="Choose at least one image before saving this gallery item.")
+        if len(uploaded_files) > 5:
+            raise HTTPException(status_code=400, detail="You can upload at most 5 gallery images.")
+        if not AWS_REGION or not S3_BUCKET:
+            raise HTTPException(status_code=400, detail="S3 upload is not configured.")
+        client = get_s3_client()
         max_order = session.scalar(select(func.max(GalleryItem.display_order)))
         item = GalleryItem(display_order=(max_order or 0) + 10, is_published=True)
         item.title = title.strip()
         item.description = description.strip()
-        item.image_url = existing_image_url.strip()
-        item.s3_key = existing_s3_key.strip() or None
         if price_amount.strip():
             try:
                 amount = Decimal(price_amount).quantize(Decimal("0.01"))
@@ -869,21 +894,19 @@ def create_gallery_item(
             item.price_cents = int(amount * 100)
         else:
             item.price_cents = None
-        if file:
-            if not file.content_type or not file.content_type.startswith("image/"):
+        for index, upload in enumerate(uploaded_files, start=1):
+            if not upload.content_type or not upload.content_type.startswith("image/"):
                 raise HTTPException(status_code=400, detail="Gallery uploads must be image files.")
-            content = file.file.read()
+            content = upload.file.read()
             if len(content) > 10 * 1024 * 1024:
                 raise HTTPException(status_code=400, detail="Each gallery image must be 10MB or smaller.")
-            if not AWS_REGION or not S3_BUCKET:
-                raise HTTPException(status_code=400, detail="S3 upload is not configured.")
-            key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
-            client = get_s3_client()
-            client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=file.content_type)
-            item.image_url = ""
-            item.s3_key = key
-        if not item.image_url and not item.s3_key:
-            raise HTTPException(status_code=400, detail="Choose an image before saving this gallery item.")
+            key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{index}-{upload.filename}"
+            client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=upload.content_type)
+            image = GalleryItemImage(image_url="", s3_key=key, display_order=index * 10)
+            item.images.append(image)
+            if index == 1:
+                item.image_url = ""
+                item.s3_key = key
         session.add(item)
         session.commit()
         session.refresh(item)
@@ -896,9 +919,7 @@ def update_gallery_item(
     title: str = Form(...),
     description: str = Form(...),
     price_amount: str = Form(default=""),
-    existing_image_url: str = Form(default=""),
-    existing_s3_key: str = Form(default=""),
-    file: UploadFile | None = File(default=None),
+    files: list[UploadFile] | None = File(default=None),
     authorization: str | None = Header(default=None),
 ) -> GalleryItemResponse:
     with SessionLocal() as session:
@@ -906,10 +927,11 @@ def update_gallery_item(
         item = session.get(GalleryItem, item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Gallery item not found.")
+        uploaded_files = files or []
+        if len(uploaded_files) > 5:
+            raise HTTPException(status_code=400, detail="You can upload at most 5 gallery images.")
         item.title = title.strip()
         item.description = description.strip()
-        item.image_url = existing_image_url.strip()
-        item.s3_key = existing_s3_key.strip() or None
         if price_amount.strip():
             try:
                 amount = Decimal(price_amount).quantize(Decimal("0.01"))
@@ -920,21 +942,30 @@ def update_gallery_item(
             item.price_cents = int(amount * 100)
         else:
             item.price_cents = None
-        if file:
-            if not file.content_type or not file.content_type.startswith("image/"):
-                raise HTTPException(status_code=400, detail="Gallery uploads must be image files.")
-            content = file.file.read()
-            if len(content) > 10 * 1024 * 1024:
-                raise HTTPException(status_code=400, detail="Each gallery image must be 10MB or smaller.")
+        if uploaded_files:
             if not AWS_REGION or not S3_BUCKET:
                 raise HTTPException(status_code=400, detail="S3 upload is not configured.")
-            key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
             client = get_s3_client()
-            client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=file.content_type)
-            item.image_url = ""
-            item.s3_key = key
-        if not item.image_url and not item.s3_key:
-            raise HTTPException(status_code=400, detail="Choose an image before saving this gallery item.")
+            item.images.clear()
+        for index, upload in enumerate(uploaded_files, start=1):
+            if not upload.content_type or not upload.content_type.startswith("image/"):
+                raise HTTPException(status_code=400, detail="Gallery uploads must be image files.")
+            content = upload.file.read()
+            if len(content) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="Each gallery image must be 10MB or smaller.")
+            key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{index}-{upload.filename}"
+            client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=upload.content_type)
+            image = GalleryItemImage(image_url="", s3_key=key, display_order=index * 10)
+            item.images.append(image)
+            if index == 1:
+                item.image_url = ""
+                item.s3_key = key
+        if not item.images:
+            raise HTTPException(status_code=400, detail="Choose at least one image before saving this gallery item.")
+        if not uploaded_files:
+            first_image = item.images[0]
+            item.image_url = first_image.image_url
+            item.s3_key = first_image.s3_key
         session.commit()
         session.refresh(item)
         return build_gallery_item_response(item)
