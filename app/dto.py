@@ -106,6 +106,7 @@ class CommissionOrderSummaryResponse(DtoModel):
     category_name: str
     status: str
     amount_cents: int | None
+    customer_confirmed_at: datetime | None
     can_open: bool
     created_at: datetime
     updated_at: datetime

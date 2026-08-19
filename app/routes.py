@@ -339,13 +339,13 @@ def list_admin_orders(page: int = Query(default=1, ge=1), page_size: int = Query
         categories = session.scalars(select(CommissionCategory).where(CommissionCategory.id.in_(category_ids))).all() if category_ids else []
         category_by_id = {category.id: category for category in categories}
         summaries = [
-            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="commission", customer_name=order.customer_name, category_name=category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom", status=status_name(order), amount_cents=order.quote_amount_cents, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
+            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="commission", customer_name=order.customer_name, category_name=category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom", status=status_name(order), amount_cents=order.quote_amount_cents, customer_confirmed_at=order.customer_confirmed_at, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
             for order in commission_orders
         ] + [
-            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="gallery", customer_name=order.customer_name, category_name=order.item_title, status=order.status.name if order.status else STATUS_ACCEPTED, amount_cents=order.amount_cents, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
+            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="gallery", customer_name=order.customer_name, category_name=order.item_title, status=order.status.name if order.status else STATUS_ACCEPTED, amount_cents=order.amount_cents, customer_confirmed_at=order.customer_confirmed_at, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
             for order in gallery_orders
         ] + [
-            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="gallery_inquiry", customer_name=order.customer_name, category_name=order.item_title, status=STATUS_SUBMITTED, amount_cents=order.amount_cents, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
+            CommissionOrderSummaryResponse(order_number=order.order_number, order_kind="gallery_inquiry", customer_name=order.customer_name, category_name=order.item_title, status=STATUS_SUBMITTED, amount_cents=order.amount_cents, customer_confirmed_at=None, can_open=True, created_at=order.created_at, updated_at=order.updated_at)
             for order in gallery_inquiries
         ]
         summaries.sort(key=lambda order: (order.created_at, order.order_number), reverse=True)
