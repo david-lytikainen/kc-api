@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS gallery_orders (
     shipping_postal_code VARCHAR(64),
     shipping_country VARCHAR(64),
     stripe_checkout_session_id VARCHAR(255) NOT NULL UNIQUE,
+    customer_confirmed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -83,6 +84,7 @@ CREATE TABLE IF NOT EXISTS commission_requests (
     status_id INTEGER NOT NULL REFERENCES commission_statuses (id),
     quote_amount_cents INTEGER,
     stripe_checkout_session_id VARCHAR(255),
+    customer_confirmed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

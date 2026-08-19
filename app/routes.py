@@ -118,7 +118,7 @@ def build_order_response_for_request(session: Session, order: CommissionRequest,
             except Exception:
                 file_url = ""
         response_files.append(CommissionFileResponse(id=file.id, file_name=file.file_name, file_url=file_url, content_type=file.content_type, size_bytes=file.size_bytes, created_at=file.created_at))
-    return CommissionOrderResponse(order_kind="commission", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, gallery_item_id=None, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, gallery_image_url=None, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
+    return CommissionOrderResponse(order_kind="commission", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, gallery_item_id=None, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, gallery_image_url=None, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
 
 
 def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -134,7 +134,7 @@ def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_i
     status = "payment_processing" if not order.is_paid else (order.status.name if order.status else STATUS_ACCEPTED)
     response_files = [CommissionFileResponse(id=order.id, file_name=order.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=order.created_at)] if image_url else []
     comments = load_gallery_order_comments(session, order.id)
-    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", gallery_item_id=order.gallery_item_id, category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
+    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", gallery_item_id=order.gallery_item_id, category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
 
 
 def build_gallery_inquiry_response(session: Session, inquiry: GalleryInquiry, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -149,7 +149,29 @@ def build_gallery_inquiry_response(session: Session, inquiry: GalleryInquiry, vi
                 image_url = inquiry.item_image_url
     comments = load_gallery_inquiry_comments(session, inquiry.id)
     response_files = [CommissionFileResponse(id=inquiry.id, file_name=inquiry.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=inquiry.created_at)] if image_url else []
-    return CommissionOrderResponse(order_kind="gallery_inquiry", order_number=inquiry.order_number, customer_name=inquiry.customer_name, customer_email=inquiry.customer_email, customer_phone="", gallery_item_id=inquiry.gallery_item_id, category_name=inquiry.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=STATUS_SUBMITTED, quote_amount_cents=inquiry.amount_cents, gallery_image_url=image_url, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, created_at=inquiry.created_at, updated_at=inquiry.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
+    return CommissionOrderResponse(order_kind="gallery_inquiry", order_number=inquiry.order_number, customer_name=inquiry.customer_name, customer_email=inquiry.customer_email, customer_phone="", gallery_item_id=inquiry.gallery_item_id, category_name=inquiry.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=STATUS_SUBMITTED, quote_amount_cents=inquiry.amount_cents, gallery_image_url=image_url, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=None, created_at=inquiry.created_at, updated_at=inquiry.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
+
+
+def send_order_status_email(recipient: str, order_number: str, status: str) -> None:
+    if not recipient or not MAIL_SERVER or not MAIL_USERNAME:
+        return
+    link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order_number}"
+    message = EmailMessage()
+    message["From"] = MAIL_USERNAME
+    message["To"] = recipient
+    message["Subject"] = f"Order {order_number} status update"
+    message.set_content(
+        f"Your order status changed to {status}.\n\n"
+        f"Open your order here:\n{link}\n"
+    )
+    try:
+        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
+            server.starttls()
+            if MAIL_USERNAME and MAIL_PASSWORD:
+                server.login(MAIL_USERNAME, MAIL_PASSWORD)
+            server.send_message(message)
+    except Exception:
+        pass
 
 
 def get_order_or_404(session: Session, order_number: str) -> CommissionRequest:
@@ -679,6 +701,30 @@ def confirm_checkout(order_number: str, payload: CheckoutConfirmRequest) -> Comm
         return build_order_response_for_request(session, order, viewer_is_admin=False)
 
 
+@router.post("/orders/{order_number}/confirm-received", response_model=CommissionOrderResponse)
+def confirm_order_received(order_number: str) -> CommissionOrderResponse:
+    with SessionLocal() as session:
+        order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
+        if order:
+            if status_name(order) != STATUS_DELIVERED:
+                raise HTTPException(status_code=400, detail="This order is not ready for customer confirmation.")
+            if not order.customer_confirmed_at:
+                order.customer_confirmed_at = datetime.now(timezone.utc)
+                session.commit()
+                session.refresh(order)
+            return build_order_response_for_request(session, order, viewer_is_admin=False)
+        gallery_order = session.scalar(select(GalleryOrder).where(GalleryOrder.order_number == order_number))
+        if not gallery_order:
+            raise HTTPException(status_code=404, detail="Order not found.")
+        if not gallery_order.is_paid or not gallery_order.status or gallery_order.status.name != STATUS_DELIVERED:
+            raise HTTPException(status_code=400, detail="This order is not ready for customer confirmation.")
+        if not gallery_order.customer_confirmed_at:
+            gallery_order.customer_confirmed_at = datetime.now(timezone.utc)
+            session.commit()
+            session.refresh(gallery_order)
+        return build_gallery_order_response(session, gallery_order, viewer_is_admin=False)
+
+
 @router.post("/stripe/webhook")
 async def stripe_webhook(request: Request, stripe_signature: str | None = Header(default=None, alias="Stripe-Signature")) -> dict[str, bool]:
     if not STRIPE_SECRET_KEY or not STRIPE_WEBHOOK_SECRET:
@@ -773,6 +819,7 @@ def set_order_quote(order_number: str, payload: QuoteRequest, authorization: str
         order.status_id = get_status_by_name(session, STATUS_QUOTED).id
         session.commit()
         session.refresh(order)
+        send_order_status_email(order.customer_email, order.order_number, STATUS_QUOTED)
         return build_order_response_for_request(session, order, viewer_is_admin=True)
 
 
@@ -784,6 +831,7 @@ def admin_decline_order(order_number: str, authorization: str | None = Header(de
         order.status_id = get_status_by_name(session, STATUS_DECLINED).id
         session.commit()
         session.refresh(order)
+        send_order_status_email(order.customer_email, order.order_number, STATUS_DECLINED)
         return build_order_response_for_request(session, order, viewer_is_admin=True)
 
 
@@ -801,6 +849,7 @@ def update_order_status(order_number: str, payload: StatusUpdateRequest, authori
             order.status_id = get_status_by_name(session, payload.status).id
             session.commit()
             session.refresh(order)
+            send_order_status_email(order.customer_email, order.order_number, payload.status)
             return build_order_response_for_request(session, order, viewer_is_admin=True)
         gallery_order = session.scalar(select(GalleryOrder).where(GalleryOrder.order_number == order_number))
         if not gallery_order:
@@ -810,6 +859,7 @@ def update_order_status(order_number: str, payload: StatusUpdateRequest, authori
         gallery_order.status_id = get_status_by_name(session, payload.status).id
         session.commit()
         session.refresh(gallery_order)
+        send_order_status_email(gallery_order.customer_email, gallery_order.order_number, payload.status)
         return build_gallery_order_response(session, gallery_order, viewer_is_admin=True)
 
 

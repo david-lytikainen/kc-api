@@ -142,6 +142,7 @@ class CommissionOrderResponse(DtoModel):
     shipping_postal_code: str | None
     shipping_country: str | None
     payment_pending: bool
+    customer_confirmed_at: datetime | None
     created_at: datetime
     updated_at: datetime
     viewer_is_admin: bool
