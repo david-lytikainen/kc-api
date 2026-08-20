@@ -103,6 +103,20 @@ class CommissionCommentResponse(DtoModel):
     updated_at: datetime
 
 
+class ReviewRequest(DtoModel):
+    rating: int
+    body: str
+
+
+class ReviewResponse(DtoModel):
+    id: int
+    rating: int
+    body: str
+    discount_awarded: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 class QuoteRequest(DtoModel):
     quote_amount: str
 
@@ -165,3 +179,6 @@ class CommissionOrderResponse(DtoModel):
     viewer_is_admin: bool
     files: list[CommissionFileResponse]
     comments: list[CommissionCommentResponse]
+    review: ReviewResponse | None
+    can_leave_review: bool
+    review_discount_eligible: bool

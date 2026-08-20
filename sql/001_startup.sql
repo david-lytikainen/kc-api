@@ -143,6 +143,18 @@ CREATE TABLE IF NOT EXISTS gallery_order_comments (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS customer_reviews (
+    id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    order_number VARCHAR(6) NOT NULL UNIQUE,
+    order_kind VARCHAR(32) NOT NULL,
+    customer_email VARCHAR(255) NOT NULL,
+    rating INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    discount_awarded BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 INSERT INTO roles (name)
 VALUES
     ('customer'),
@@ -213,3 +225,5 @@ CREATE INDEX IF NOT EXISTS ix_gallery_inquiry_comments_gallery_inquiry_id ON gal
 CREATE INDEX IF NOT EXISTS ix_gallery_inquiry_comments_author_role_id ON gallery_inquiry_comments (author_role_id);
 CREATE INDEX IF NOT EXISTS ix_gallery_order_comments_gallery_order_id ON gallery_order_comments (gallery_order_id);
 CREATE INDEX IF NOT EXISTS ix_gallery_order_comments_author_role_id ON gallery_order_comments (author_role_id);
+CREATE INDEX IF NOT EXISTS ix_customer_reviews_order_number ON customer_reviews (order_number);
+CREATE INDEX IF NOT EXISTS ix_customer_reviews_customer_email ON customer_reviews (customer_email);

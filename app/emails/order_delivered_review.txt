@@ -1,0 +1,6 @@
+Your order has been delivered.
+
+If you want to leave a review, open your order here:
+{link}
+
+Scroll below the comments section to leave a review with stars and a written note.

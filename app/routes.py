@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 import stripe
 
 from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
-from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryInquiryRequest, GalleryItemImageResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, StatusUpdateRequest, UserResponse
-from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, GalleryInquiry, GalleryInquiryComment, GalleryItem, GalleryItemImage, GalleryOrder, GalleryOrderComment, Role
+from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryInquiryRequest, GalleryItemImageResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, ReviewRequest, ReviewResponse, StatusUpdateRequest, UserResponse
+from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, CustomerReview, GalleryInquiry, GalleryInquiryComment, GalleryItem, GalleryItemImage, GalleryOrder, GalleryOrderComment, Role
 
 
 router = APIRouter()
@@ -162,6 +162,23 @@ def build_category_response(category: CommissionCategory) -> CategoryResponse:
     return CategoryResponse(id=category.id, name=category.name, is_archived=category.is_archived, created_at=category.created_at, updated_at=category.updated_at)
 
 
+def build_review_response(review: CustomerReview) -> ReviewResponse:
+    return ReviewResponse(id=review.id, rating=review.rating, body=review.body, discount_awarded=review.discount_awarded, created_at=review.created_at, updated_at=review.updated_at)
+
+
+def get_review_for_order(session: Session, order_number: str) -> CustomerReview | None:
+    return session.scalar(select(CustomerReview).where(CustomerReview.order_number == order_number))
+
+
+def review_discount_eligible(session: Session, customer_email: str, existing_review_id: int | None = None) -> bool:
+    if not customer_email:
+        return False
+    prior_reviews = session.scalars(select(CustomerReview).where(CustomerReview.customer_email == customer_email)).all()
+    if existing_review_id is not None:
+        prior_reviews = [review for review in prior_reviews if review.id != existing_review_id]
+    return not prior_reviews
+
+
 def load_order_comments(session: Session, order_id: int) -> list[CommissionComment]:
     return session.scalars(select(CommissionComment).where(CommissionComment.commission_request_id == order_id).order_by(CommissionComment.created_at.asc(), CommissionComment.id.asc())).all()
 
@@ -186,10 +203,13 @@ def build_order_response_for_request(session: Session, order: CommissionRequest,
     category_by_id = {category.id: category for category in categories}
     category_name = category_by_id[order.category_id].name if order.category_id and order.category_id in category_by_id else order.custom_category_name or "Custom"
     response_files: list[CommissionFileResponse] = []
+    review = get_review_for_order(session, order.order_number)
+    can_leave_review = (not viewer_is_admin) and status_name(order) == STATUS_DELIVERED and review is None
+    discount_eligible = can_leave_review and review_discount_eligible(session, order.customer_email)
     for file in files:
         file_url = build_presigned_s3_url(file.s3_key)
         response_files.append(CommissionFileResponse(id=file.id, file_name=file.file_name, file_url=file_url, content_type=file.content_type, size_bytes=file.size_bytes, created_at=file.created_at))
-    return CommissionOrderResponse(order_kind="commission", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, gallery_item_id=None, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, gallery_image_url=None, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
+    return CommissionOrderResponse(order_kind="commission", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, gallery_item_id=None, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, gallery_image_url=None, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments], review=build_review_response(review) if review else None, can_leave_review=can_leave_review, review_discount_eligible=discount_eligible)
 
 
 def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -198,7 +218,10 @@ def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_i
     status = "payment_processing" if not order.is_paid else (order.status.name if order.status else STATUS_ACCEPTED)
     response_files = [CommissionFileResponse(id=order.id, file_name=order.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=order.created_at)] if image_url else []
     comments = load_gallery_order_comments(session, order.id)
-    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", gallery_item_id=order.gallery_item_id, category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
+    review = get_review_for_order(session, order.order_number)
+    can_leave_review = (not viewer_is_admin) and order.is_paid and status == STATUS_DELIVERED and review is None
+    discount_eligible = can_leave_review and review_discount_eligible(session, order.customer_email)
+    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", gallery_item_id=order.gallery_item_id, category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments], review=build_review_response(review) if review else None, can_leave_review=can_leave_review, review_discount_eligible=discount_eligible)
 
 
 def build_gallery_inquiry_response(session: Session, inquiry: GalleryInquiry, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -206,11 +229,19 @@ def build_gallery_inquiry_response(session: Session, inquiry: GalleryInquiry, vi
     image_url = build_presigned_s3_url(item.s3_key if item else None, inquiry.item_image_url)
     comments = load_gallery_inquiry_comments(session, inquiry.id)
     response_files = [CommissionFileResponse(id=inquiry.id, file_name=inquiry.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=inquiry.created_at)] if image_url else []
-    return CommissionOrderResponse(order_kind="gallery_inquiry", order_number=inquiry.order_number, customer_name=inquiry.customer_name, customer_email=inquiry.customer_email, customer_phone="", gallery_item_id=inquiry.gallery_item_id, category_name=inquiry.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=STATUS_SUBMITTED, quote_amount_cents=inquiry.amount_cents, gallery_image_url=image_url, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=None, created_at=inquiry.created_at, updated_at=inquiry.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments])
+    return CommissionOrderResponse(order_kind="gallery_inquiry", order_number=inquiry.order_number, customer_name=inquiry.customer_name, customer_email=inquiry.customer_email, customer_phone="", gallery_item_id=inquiry.gallery_item_id, category_name=inquiry.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=STATUS_SUBMITTED, quote_amount_cents=inquiry.amount_cents, gallery_image_url=image_url, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=None, created_at=inquiry.created_at, updated_at=inquiry.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments], review=None, can_leave_review=False, review_discount_eligible=False)
 
 
-def send_order_status_email(recipient: str, order_number: str, status: str) -> None:
+def send_order_status_email(recipient: str, order_number: str, status: str, review_discount_offer: bool = False) -> None:
     link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order_number}"
+    if status == STATUS_DELIVERED:
+        template_name = "order_delivered_review_discount.txt" if review_discount_offer else "order_delivered_review.txt"
+        send_plain_email(
+            recipient,
+            f"Order {order_number} delivered",
+            render_email_template(template_name, order_number=order_number, link=link),
+        )
+        return
     send_plain_email(
         recipient,
         f"Order {order_number} status update",
@@ -289,6 +320,22 @@ def mark_order_paid(session: Session, order: CommissionRequest, checkout_session
     session.commit()
     session.refresh(order)
     return order
+
+
+def get_reviewable_order(session: Session, order_number: str) -> tuple[CommissionRequest | GalleryOrder | None, str, str]:
+    commission_order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
+    if commission_order:
+        if status_name(commission_order) != STATUS_DELIVERED:
+            raise HTTPException(status_code=400, detail="This order is not ready for review.")
+        return commission_order, "commission", commission_order.customer_email
+    gallery_order = session.scalar(select(GalleryOrder).where(GalleryOrder.order_number == order_number))
+    if gallery_order:
+        if not gallery_order.is_paid or not gallery_order.status or gallery_order.status.name != STATUS_DELIVERED:
+            raise HTTPException(status_code=400, detail="This order is not ready for review.")
+        return gallery_order, "gallery", gallery_order.customer_email
+    if session.scalar(select(GalleryInquiry).where(GalleryInquiry.order_number == order_number)):
+        raise HTTPException(status_code=400, detail="Gallery inquiries cannot be reviewed.")
+    raise HTTPException(status_code=404, detail="Order not found.")
 
 
 def generate_order_number(session: Session) -> str:
@@ -764,6 +811,31 @@ def confirm_order_received(order_number: str) -> CommissionOrderResponse:
         return build_gallery_order_response(session, gallery_order, viewer_is_admin=False)
 
 
+@router.post("/orders/{order_number}/review", response_model=CommissionOrderResponse)
+def submit_order_review(order_number: str, payload: ReviewRequest) -> CommissionOrderResponse:
+    rating = payload.rating
+    body = payload.body.strip()
+    if rating < 1 or rating > 5:
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5.")
+    if not body:
+        raise HTTPException(status_code=400, detail="Review text is required.")
+    with SessionLocal() as session:
+        existing_review = get_review_for_order(session, order_number)
+        if existing_review:
+            raise HTTPException(status_code=400, detail="A review was already submitted for this order.")
+        order, order_kind, customer_email = get_reviewable_order(session, order_number)
+        if not customer_email:
+            raise HTTPException(status_code=400, detail="This order is missing a customer email.")
+        discount_awarded = review_discount_eligible(session, customer_email)
+        review = CustomerReview(order_number=order_number, order_kind=order_kind, customer_email=customer_email, rating=rating, body=body, discount_awarded=discount_awarded)
+        session.add(review)
+        session.commit()
+        session.refresh(review)
+        if order_kind == "commission":
+            return build_order_response_for_request(session, order, viewer_is_admin=False)
+        return build_gallery_order_response(session, order, viewer_is_admin=False)
+
+
 @router.post("/stripe/webhook")
 async def stripe_webhook(request: Request, stripe_signature: str | None = Header(default=None, alias="Stripe-Signature")) -> dict[str, bool]:
     if not STRIPE_SECRET_KEY or not STRIPE_WEBHOOK_SECRET:
@@ -859,7 +931,7 @@ def update_order_status(order_number: str, payload: StatusUpdateRequest, authori
             order.status_id = get_status_by_name(session, payload.status).id
             session.commit()
             session.refresh(order)
-            send_order_status_email(order.customer_email, order.order_number, payload.status)
+            send_order_status_email(order.customer_email, order.order_number, payload.status, review_discount_offer=payload.status == STATUS_DELIVERED and review_discount_eligible(session, order.customer_email))
             return build_order_response_for_request(session, order, viewer_is_admin=True)
         gallery_order = session.scalar(select(GalleryOrder).where(GalleryOrder.order_number == order_number))
         if not gallery_order:
@@ -869,7 +941,7 @@ def update_order_status(order_number: str, payload: StatusUpdateRequest, authori
         gallery_order.status_id = get_status_by_name(session, payload.status).id
         session.commit()
         session.refresh(gallery_order)
-        send_order_status_email(gallery_order.customer_email, gallery_order.order_number, payload.status)
+        send_order_status_email(gallery_order.customer_email, gallery_order.order_number, payload.status, review_discount_offer=payload.status == STATUS_DELIVERED and review_discount_eligible(session, gallery_order.customer_email))
         return build_gallery_order_response(session, gallery_order, viewer_is_admin=True)
 
 

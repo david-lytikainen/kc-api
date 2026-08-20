@@ -196,3 +196,17 @@ class GalleryOrderComment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     author_role: Mapped[Role] = relationship()
+
+
+class CustomerReview(Base):
+    __tablename__ = "customer_reviews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_number: Mapped[str] = mapped_column(String(6), nullable=False, unique=True, index=True)
+    order_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    customer_email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    discount_awarded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
