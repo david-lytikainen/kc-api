@@ -110,7 +110,6 @@ def render_email_template(template_name: str, **context: str) -> str:
 
 
 def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
-    image_url = build_presigned_s3_url(item.s3_key, item.image_url)
     images = [
         GalleryItemImageResponse(
             id=image.id,
@@ -121,9 +120,21 @@ def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
         )
         for image in item.images
     ]
+    image_url = build_presigned_s3_url(item.s3_key, item.image_url)
+    if images:
+        image_url = images[0].image_url
     if not images and (item.image_url or item.s3_key):
         images = [GalleryItemImageResponse(id=0, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, display_order=10)]
     return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, price_cents=item.price_cents, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at, images=images)
+
+
+def sync_gallery_cover_image(item: GalleryItem) -> None:
+    if item.images:
+        item.image_url = item.images[0].image_url
+        item.s3_key = item.images[0].s3_key
+        return
+    item.image_url = ""
+    item.s3_key = None
 
 
 def build_category_response(category: CommissionCategory) -> CategoryResponse:
@@ -919,6 +930,7 @@ def update_gallery_item(
     title: str = Form(...),
     description: str = Form(...),
     price_amount: str = Form(default=""),
+    existing_image_ids: list[int] | None = Form(default=None),
     files: list[UploadFile] | None = File(default=None),
     authorization: str | None = Header(default=None),
 ) -> GalleryItemResponse:
@@ -957,15 +969,19 @@ def update_gallery_item(
             client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=upload.content_type)
             image = GalleryItemImage(image_url="", s3_key=key, display_order=index * 10)
             item.images.append(image)
-            if index == 1:
-                item.image_url = ""
-                item.s3_key = key
+        if not uploaded_files and existing_image_ids is not None:
+            image_by_id = {image.id: image for image in item.images}
+            if len(image_by_id) != len(existing_image_ids) or set(image_by_id) != set(existing_image_ids):
+                raise HTTPException(status_code=400, detail="Image order does not match this gallery item.")
+            item.images[:] = [image_by_id[image_id] for image_id in existing_image_ids]
+            for index, image in enumerate(item.images, start=1):
+                image.display_order = index * 10
         if not item.images:
             raise HTTPException(status_code=400, detail="Choose at least one image before saving this gallery item.")
-        if not uploaded_files:
-            first_image = item.images[0]
-            item.image_url = first_image.image_url
-            item.s3_key = first_image.s3_key
+        if uploaded_files:
+            for index, image in enumerate(item.images, start=1):
+                image.display_order = index * 10
+        sync_gallery_cover_image(item)
         session.commit()
         session.refresh(item)
         return build_gallery_item_response(item)
