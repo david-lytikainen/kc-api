@@ -93,6 +93,10 @@ class GalleryInquiryRequest(DtoModel):
     body: str
 
 
+class GalleryCheckoutRequest(DtoModel):
+    customer_email: EmailStr
+
+
 class CommissionCommentResponse(DtoModel):
     id: int
     author_role: str
@@ -164,6 +168,8 @@ class CommissionOrderResponse(DtoModel):
     size: str
     status: str
     quote_amount_cents: int | None
+    payable_amount_cents: int | None
+    applied_review_discount_cents: int
     gallery_image_url: str | None
     shipping_name: str | None
     shipping_line1: str | None
@@ -182,3 +188,4 @@ class CommissionOrderResponse(DtoModel):
     review: ReviewResponse | None
     can_leave_review: bool
     review_discount_eligible: bool
+    review_discount_available: bool

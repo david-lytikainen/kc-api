@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.message import EmailMessage
 import hmac
 from pathlib import Path
@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 import stripe
 
 from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
-from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryInquiryRequest, GalleryItemImageResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, ReviewRequest, ReviewResponse, StatusUpdateRequest, UserResponse
+from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryCheckoutRequest, GalleryInquiryRequest, GalleryItemImageResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, ReviewRequest, ReviewResponse, StatusUpdateRequest, UserResponse
 from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, CustomerReview, GalleryInquiry, GalleryInquiryComment, GalleryItem, GalleryItemImage, GalleryOrder, GalleryOrderComment, Role
 
 
@@ -144,7 +144,7 @@ def mark_gallery_order_paid(session: Session, order: GalleryOrder, checkout_sess
     order.status_id = get_status_by_name(session, STATUS_ACCEPTED).id
     order.is_paid = True
     order.customer_name = customer_details.get("name") or shipping_details.get("name") or "Customer"
-    order.customer_email = customer_details.get("email") or ""
+    order.customer_email = customer_details.get("email") or order.customer_email
     order.shipping_name = shipping_details.get("name")
     order.shipping_line1 = shipping_address.get("line1")
     order.shipping_line2 = shipping_address.get("line2")
@@ -156,6 +156,9 @@ def mark_gallery_order_paid(session: Session, order: GalleryOrder, checkout_sess
     if item and item.price_cents is not None:
         item.price_cents = None
         item.is_sold = True
+    reward_review_id = checkout_session.get("metadata", {}).get("reward_review_id")
+    if reward_review_id:
+        mark_review_discount_redeemed(session, int(reward_review_id), order.order_number)
 
 
 def build_category_response(category: CommissionCategory) -> CategoryResponse:
@@ -170,6 +173,10 @@ def get_review_for_order(session: Session, order_number: str) -> CustomerReview 
     return session.scalar(select(CustomerReview).where(CustomerReview.order_number == order_number))
 
 
+def normalize_customer_email(value: str) -> str:
+    return value.strip().lower()
+
+
 def review_discount_eligible(session: Session, customer_email: str, existing_review_id: int | None = None) -> bool:
     if not customer_email:
         return False
@@ -177,6 +184,42 @@ def review_discount_eligible(session: Session, customer_email: str, existing_rev
     if existing_review_id is not None:
         prior_reviews = [review for review in prior_reviews if review.id != existing_review_id]
     return not prior_reviews
+
+
+def get_unused_review_discount(session: Session, customer_email: str) -> CustomerReview | None:
+    if not customer_email:
+        return None
+    return session.scalar(
+        select(CustomerReview)
+        .where(
+            CustomerReview.customer_email == customer_email,
+            CustomerReview.discount_awarded.is_(True),
+            CustomerReview.discount_redeemed_at.is_(None),
+        )
+        .order_by(CustomerReview.created_at.asc(), CustomerReview.id.asc())
+    )
+
+
+def calculate_review_discount(amount_cents: int | None, customer_email: str, session: Session) -> tuple[int | None, int, bool, int | None]:
+    if amount_cents is None:
+        return None, 0, False, None
+    reward = get_unused_review_discount(session, customer_email)
+    if not reward:
+        return amount_cents, 0, False, None
+    discount_cents = int((Decimal(amount_cents) * Decimal("0.10")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    if discount_cents <= 0:
+        return amount_cents, 0, False, None
+    return amount_cents - discount_cents, discount_cents, True, reward.id
+
+
+def mark_review_discount_redeemed(session: Session, review_id: int | None, order_number: str) -> None:
+    if not review_id:
+        return
+    review = session.get(CustomerReview, review_id)
+    if not review or review.discount_redeemed_at:
+        return
+    review.discount_redeemed_order_number = order_number
+    review.discount_redeemed_at = datetime.now(timezone.utc)
 
 
 def load_order_comments(session: Session, order_id: int) -> list[CommissionComment]:
@@ -206,10 +249,17 @@ def build_order_response_for_request(session: Session, order: CommissionRequest,
     review = get_review_for_order(session, order.order_number)
     can_leave_review = (not viewer_is_admin) and status_name(order) == STATUS_DELIVERED and review is None
     discount_eligible = can_leave_review and review_discount_eligible(session, order.customer_email)
+    payable_amount_cents = order.quote_amount_cents
+    review_discount_available = False
+    if order.quote_amount_cents is not None:
+        if order.applied_review_discount_cents:
+            payable_amount_cents = max(order.quote_amount_cents - order.applied_review_discount_cents, 0)
+        else:
+            payable_amount_cents, _, review_discount_available, _ = calculate_review_discount(order.quote_amount_cents, order.customer_email, session)
     for file in files:
         file_url = build_presigned_s3_url(file.s3_key)
         response_files.append(CommissionFileResponse(id=file.id, file_name=file.file_name, file_url=file_url, content_type=file.content_type, size_bytes=file.size_bytes, created_at=file.created_at))
-    return CommissionOrderResponse(order_kind="commission", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, gallery_item_id=None, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, gallery_image_url=None, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments], review=build_review_response(review) if review else None, can_leave_review=can_leave_review, review_discount_eligible=discount_eligible)
+    return CommissionOrderResponse(order_kind="commission", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone=order.customer_phone, gallery_item_id=None, category_name=category_name, category_id=order.category_id, custom_category_name=order.custom_category_name, instructions=order.instructions, medium=order.medium, size=order.size, status=status_name(order), quote_amount_cents=order.quote_amount_cents, payable_amount_cents=payable_amount_cents, applied_review_discount_cents=order.applied_review_discount_cents, gallery_image_url=None, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments], review=build_review_response(review) if review else None, can_leave_review=can_leave_review, review_discount_eligible=discount_eligible, review_discount_available=review_discount_available)
 
 
 def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -221,7 +271,8 @@ def build_gallery_order_response(session: Session, order: GalleryOrder, viewer_i
     review = get_review_for_order(session, order.order_number)
     can_leave_review = (not viewer_is_admin) and order.is_paid and status == STATUS_DELIVERED and review is None
     discount_eligible = can_leave_review and review_discount_eligible(session, order.customer_email)
-    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", gallery_item_id=order.gallery_item_id, category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments], review=build_review_response(review) if review else None, can_leave_review=can_leave_review, review_discount_eligible=discount_eligible)
+    payable_amount_cents = max(order.amount_cents - order.applied_review_discount_cents, 0)
+    return CommissionOrderResponse(order_kind="gallery", order_number=order.order_number, customer_name=order.customer_name, customer_email=order.customer_email, customer_phone="", gallery_item_id=order.gallery_item_id, category_name=order.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=status, quote_amount_cents=order.amount_cents, payable_amount_cents=payable_amount_cents, applied_review_discount_cents=order.applied_review_discount_cents, gallery_image_url=image_url, shipping_name=order.shipping_name, shipping_line1=order.shipping_line1, shipping_line2=order.shipping_line2, shipping_city=order.shipping_city, shipping_state=order.shipping_state, shipping_postal_code=order.shipping_postal_code, shipping_country=order.shipping_country, payment_pending=not order.is_paid, customer_confirmed_at=order.customer_confirmed_at, created_at=order.created_at, updated_at=order.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments], review=build_review_response(review) if review else None, can_leave_review=can_leave_review, review_discount_eligible=discount_eligible, review_discount_available=False)
 
 
 def build_gallery_inquiry_response(session: Session, inquiry: GalleryInquiry, viewer_is_admin: bool) -> CommissionOrderResponse:
@@ -229,7 +280,11 @@ def build_gallery_inquiry_response(session: Session, inquiry: GalleryInquiry, vi
     image_url = build_presigned_s3_url(item.s3_key if item else None, inquiry.item_image_url)
     comments = load_gallery_inquiry_comments(session, inquiry.id)
     response_files = [CommissionFileResponse(id=inquiry.id, file_name=inquiry.item_title, file_url=image_url, content_type="image/*", size_bytes=0, created_at=inquiry.created_at)] if image_url else []
-    return CommissionOrderResponse(order_kind="gallery_inquiry", order_number=inquiry.order_number, customer_name=inquiry.customer_name, customer_email=inquiry.customer_email, customer_phone="", gallery_item_id=inquiry.gallery_item_id, category_name=inquiry.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=STATUS_SUBMITTED, quote_amount_cents=inquiry.amount_cents, gallery_image_url=image_url, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=None, created_at=inquiry.created_at, updated_at=inquiry.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments], review=None, can_leave_review=False, review_discount_eligible=False)
+    payable_amount_cents = inquiry.amount_cents
+    review_discount_available = False
+    if inquiry.amount_cents is not None:
+        payable_amount_cents, _, review_discount_available, _ = calculate_review_discount(inquiry.amount_cents, inquiry.customer_email, session)
+    return CommissionOrderResponse(order_kind="gallery_inquiry", order_number=inquiry.order_number, customer_name=inquiry.customer_name, customer_email=inquiry.customer_email, customer_phone="", gallery_item_id=inquiry.gallery_item_id, category_name=inquiry.item_title, category_id=None, custom_category_name=None, instructions="", medium="", size="", status=STATUS_SUBMITTED, quote_amount_cents=inquiry.amount_cents, payable_amount_cents=payable_amount_cents, applied_review_discount_cents=0, gallery_image_url=image_url, shipping_name=None, shipping_line1=None, shipping_line2=None, shipping_city=None, shipping_state=None, shipping_postal_code=None, shipping_country=None, payment_pending=False, customer_confirmed_at=None, created_at=inquiry.created_at, updated_at=inquiry.updated_at, viewer_is_admin=viewer_is_admin, files=response_files, comments=[build_comment_response_for_order(comment) for comment in comments], review=None, can_leave_review=False, review_discount_eligible=False, review_discount_available=review_discount_available)
 
 
 def send_order_status_email(recipient: str, order_number: str, status: str, review_discount_offer: bool = False) -> None:
@@ -684,12 +739,23 @@ def create_order_checkout(order_number: str) -> dict[str, str]:
             raise HTTPException(status_code=400, detail="This order is not ready for payment.")
         if not STRIPE_SECRET_KEY:
             raise HTTPException(status_code=400, detail="Stripe is not configured.")
+        checkout_amount_cents, applied_discount_cents, _, reward_review_id = calculate_review_discount(order.quote_amount_cents, order.customer_email, session)
+        checkout_amount_cents = checkout_amount_cents or order.quote_amount_cents
+        checkout_name = f"Commission {order.order_number}"
+        if applied_discount_cents:
+            checkout_name = f"{checkout_name} (10% review reward applied)"
         checkout = stripe.checkout.Session.create(
             mode="payment",
             success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}?checkout_session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}",
-            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": order.quote_amount_cents, "product_data": {"name": f"Commission {order.order_number}"}}}],
-            metadata={"order_number": order.order_number},
+            customer_email=order.customer_email,
+            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": checkout_amount_cents, "product_data": {"name": checkout_name}}}],
+            metadata={
+                "order_number": order.order_number,
+                "order_kind": "commission",
+                "reward_review_id": str(reward_review_id or ""),
+                "applied_review_discount_cents": str(applied_discount_cents),
+            },
         )
         return {"url": checkout.url}
 
@@ -700,7 +766,7 @@ def create_gallery_inquiry(item_id: int, payload: GalleryInquiryRequest) -> Comm
         item = session.get(GalleryItem, item_id)
         if not item or not item.is_published:
             raise HTTPException(status_code=404, detail="Gallery item not found.")
-        customer_email = payload.customer_email.strip().lower()
+        customer_email = normalize_customer_email(payload.customer_email)
         body = payload.body.strip()
         if not customer_email or not body:
             raise HTTPException(status_code=400, detail="Email and question message are required.")
@@ -718,7 +784,7 @@ def create_gallery_inquiry(item_id: int, payload: GalleryInquiryRequest) -> Comm
 
 
 @router.post("/gallery/{item_id}/checkout")
-def create_gallery_checkout(item_id: int) -> dict[str, str]:
+def create_gallery_checkout(item_id: int, payload: GalleryCheckoutRequest) -> dict[str, str]:
     with SessionLocal() as session:
         item = session.get(GalleryItem, item_id)
         if not item or not item.is_published:
@@ -727,18 +793,24 @@ def create_gallery_checkout(item_id: int) -> dict[str, str]:
             raise HTTPException(status_code=400, detail="This gallery item is not for sale.")
         if not STRIPE_SECRET_KEY:
             raise HTTPException(status_code=400, detail="Stripe is not configured.")
+        customer_email = normalize_customer_email(payload.customer_email)
+        if not customer_email:
+            raise HTTPException(status_code=400, detail="Customer email is required.")
+        checkout_amount_cents, applied_discount_cents, _, reward_review_id = calculate_review_discount(item.price_cents, customer_email, session)
+        checkout_amount_cents = checkout_amount_cents or item.price_cents
         order_number = generate_order_number(session)
         checkout = stripe.checkout.Session.create(
             mode="payment",
             success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order_number}",
             cancel_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}",
             billing_address_collection="required",
+            customer_email=customer_email,
             shipping_address_collection={"allowed_countries": ["US", "CA", "GB", "AU", "NZ"]},
-            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": item.price_cents, "product_data": {"name": item.title}}}],
-            metadata={"order_kind": "gallery", "order_number": order_number, "gallery_item_id": str(item.id)},
+            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": checkout_amount_cents, "product_data": {"name": item.title if not applied_discount_cents else f'{item.title} (10% review reward applied)'}}}],
+            metadata={"order_kind": "gallery", "order_number": order_number, "gallery_item_id": str(item.id), "reward_review_id": str(reward_review_id or ""), "applied_review_discount_cents": str(applied_discount_cents)},
         )
         submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
-        session.add(GalleryOrder(order_number=order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, status_id=submitted_status.id, is_paid=False, customer_name="Customer", customer_email="", stripe_checkout_session_id=checkout.id))
+        session.add(GalleryOrder(order_number=order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, applied_review_discount_cents=applied_discount_cents, status_id=submitted_status.id, is_paid=False, customer_name="Customer", customer_email=customer_email, stripe_checkout_session_id=checkout.id))
         session.commit()
         return {"url": checkout.url}
 
@@ -756,18 +828,21 @@ def create_gallery_inquiry_checkout(order_number: str) -> dict[str, str]:
             raise HTTPException(status_code=400, detail="This gallery item is not for sale.")
         if not STRIPE_SECRET_KEY:
             raise HTTPException(status_code=400, detail="Stripe is not configured.")
+        checkout_amount_cents, applied_discount_cents, _, reward_review_id = calculate_review_discount(item.price_cents, inquiry.customer_email, session)
+        checkout_amount_cents = checkout_amount_cents or item.price_cents
         purchase_order_number = generate_order_number(session)
         checkout = stripe.checkout.Session.create(
             mode="payment",
             success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{purchase_order_number}",
             cancel_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{inquiry.order_number}",
             billing_address_collection="required",
+            customer_email=inquiry.customer_email,
             shipping_address_collection={"allowed_countries": ["US", "CA", "GB", "AU", "NZ"]},
-            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": item.price_cents, "product_data": {"name": item.title}}}],
-            metadata={"order_kind": "gallery", "order_number": purchase_order_number, "gallery_item_id": str(item.id), "inquiry_order_number": inquiry.order_number},
+            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": checkout_amount_cents, "product_data": {"name": item.title if not applied_discount_cents else f'{item.title} (10% review reward applied)'}}}],
+            metadata={"order_kind": "gallery", "order_number": purchase_order_number, "gallery_item_id": str(item.id), "inquiry_order_number": inquiry.order_number, "reward_review_id": str(reward_review_id or ""), "applied_review_discount_cents": str(applied_discount_cents)},
         )
         submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
-        session.add(GalleryOrder(order_number=purchase_order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, status_id=submitted_status.id, is_paid=False, customer_name="Customer", customer_email="", stripe_checkout_session_id=checkout.id))
+        session.add(GalleryOrder(order_number=purchase_order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, applied_review_discount_cents=applied_discount_cents, status_id=submitted_status.id, is_paid=False, customer_name="Customer", customer_email=inquiry.customer_email, stripe_checkout_session_id=checkout.id))
         session.commit()
         return {"url": checkout.url}
 
@@ -783,7 +858,13 @@ def confirm_checkout(order_number: str, payload: CheckoutConfirmRequest) -> Comm
         raise HTTPException(status_code=400, detail="Checkout session is not paid.")
     with SessionLocal() as session:
         order = get_order_or_404(session, order_number)
+        order.applied_review_discount_cents = int(checkout_session.metadata.get("applied_review_discount_cents") or "0")
         order = mark_order_paid(session, order, payload.checkout_session_id)
+        reward_review_id = checkout_session.metadata.get("reward_review_id") or ""
+        if reward_review_id:
+            mark_review_discount_redeemed(session, int(reward_review_id), order.order_number)
+            session.commit()
+            session.refresh(order)
         return build_order_response_for_request(session, order, viewer_is_admin=False)
 
 
@@ -882,7 +963,12 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
         order = session.scalar(select(CommissionRequest).where(CommissionRequest.order_number == order_number))
         if not order or order.stripe_checkout_session_id == checkout_session_id:
             return {"received": True}
+        order.applied_review_discount_cents = int(checkout_session.get("metadata", {}).get("applied_review_discount_cents") or "0")
         mark_order_paid(session, order, checkout_session_id)
+        reward_review_id = checkout_session.get("metadata", {}).get("reward_review_id")
+        if reward_review_id:
+            mark_review_discount_redeemed(session, int(reward_review_id), order.order_number)
+            session.commit()
     return {"received": True}
 
 

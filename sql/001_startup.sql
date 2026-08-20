@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS gallery_orders (
     item_title VARCHAR(255) NOT NULL,
     item_image_url VARCHAR(1024) NOT NULL,
     amount_cents INTEGER NOT NULL,
+    applied_review_discount_cents INTEGER NOT NULL DEFAULT 0,
     status_id INTEGER REFERENCES commission_statuses (id),
     is_paid BOOLEAN NOT NULL DEFAULT FALSE,
     customer_name VARCHAR(255) NOT NULL,
@@ -94,6 +95,7 @@ CREATE TABLE IF NOT EXISTS commission_requests (
     size VARCHAR(255) NOT NULL,
     status_id INTEGER NOT NULL REFERENCES commission_statuses (id),
     quote_amount_cents INTEGER,
+    applied_review_discount_cents INTEGER NOT NULL DEFAULT 0,
     stripe_checkout_session_id VARCHAR(255),
     customer_confirmed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -151,6 +153,8 @@ CREATE TABLE IF NOT EXISTS customer_reviews (
     rating INTEGER NOT NULL,
     body TEXT NOT NULL,
     discount_awarded BOOLEAN NOT NULL DEFAULT FALSE,
+    discount_redeemed_order_number VARCHAR(6),
+    discount_redeemed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -178,6 +182,9 @@ ALTER TABLE commission_requests
 ALTER TABLE gallery_orders
     ADD COLUMN IF NOT EXISTS customer_confirmed_at TIMESTAMPTZ;
 
+ALTER TABLE gallery_orders
+    ADD COLUMN IF NOT EXISTS applied_review_discount_cents INTEGER NOT NULL DEFAULT 0;
+
 ALTER TABLE commission_comments
     ADD COLUMN IF NOT EXISTS email_error TEXT;
 
@@ -189,6 +196,15 @@ ALTER TABLE gallery_order_comments
 
 ALTER TABLE gallery_items
     ADD COLUMN IF NOT EXISTS is_sold BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE commission_requests
+    ADD COLUMN IF NOT EXISTS applied_review_discount_cents INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE customer_reviews
+    ADD COLUMN IF NOT EXISTS discount_redeemed_order_number VARCHAR(6);
+
+ALTER TABLE customer_reviews
+    ADD COLUMN IF NOT EXISTS discount_redeemed_at TIMESTAMPTZ;
 
 INSERT INTO gallery_item_images (gallery_item_id, image_url, s3_key, display_order)
 SELECT gallery_items.id, gallery_items.image_url, gallery_items.s3_key, 10
@@ -227,3 +243,4 @@ CREATE INDEX IF NOT EXISTS ix_gallery_order_comments_gallery_order_id ON gallery
 CREATE INDEX IF NOT EXISTS ix_gallery_order_comments_author_role_id ON gallery_order_comments (author_role_id);
 CREATE INDEX IF NOT EXISTS ix_customer_reviews_order_number ON customer_reviews (order_number);
 CREATE INDEX IF NOT EXISTS ix_customer_reviews_customer_email ON customer_reviews (customer_email);
+CREATE INDEX IF NOT EXISTS ix_customer_reviews_discount_redeemed_order_number ON customer_reviews (discount_redeemed_order_number);
