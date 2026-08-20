@@ -137,6 +137,26 @@ def sync_gallery_cover_image(item: GalleryItem) -> None:
     item.s3_key = None
 
 
+def mark_gallery_order_paid(session: Session, order: GalleryOrder, checkout_session: dict) -> None:
+    customer_details = checkout_session.get("customer_details") or {}
+    shipping_details = checkout_session.get("shipping_details") or {}
+    shipping_address = shipping_details.get("address") or {}
+    order.status_id = get_status_by_name(session, STATUS_ACCEPTED).id
+    order.is_paid = True
+    order.customer_name = customer_details.get("name") or shipping_details.get("name") or "Customer"
+    order.customer_email = customer_details.get("email") or ""
+    order.shipping_name = shipping_details.get("name")
+    order.shipping_line1 = shipping_address.get("line1")
+    order.shipping_line2 = shipping_address.get("line2")
+    order.shipping_city = shipping_address.get("city")
+    order.shipping_state = shipping_address.get("state")
+    order.shipping_postal_code = shipping_address.get("postal_code")
+    order.shipping_country = shipping_address.get("country")
+    item = session.get(GalleryItem, order.gallery_item_id) if order.gallery_item_id else None
+    if item and item.price_cents is not None:
+        item.price_cents = None
+
+
 def build_category_response(category: CommissionCategory) -> CategoryResponse:
     return CategoryResponse(id=category.id, name=category.name, is_archived=category.is_archived, created_at=category.created_at, updated_at=category.updated_at)
 
@@ -767,26 +787,13 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
         checkout_session_id = checkout_session.get("id")
         if not checkout_session_id:
             return {"received": True}
-        customer_details = checkout_session.get("customer_details") or {}
-        shipping_details = checkout_session.get("shipping_details") or {}
-        shipping_address = shipping_details.get("address") or {}
         with SessionLocal() as session:
             order = session.scalar(select(GalleryOrder).where(GalleryOrder.stripe_checkout_session_id == checkout_session_id))
             if not order:
                 return {"received": True}
             if order.is_paid:
                 return {"received": True}
-            order.status_id = get_status_by_name(session, STATUS_ACCEPTED).id
-            order.is_paid = True
-            order.customer_name = customer_details.get("name") or shipping_details.get("name") or "Customer"
-            order.customer_email = customer_details.get("email") or ""
-            order.shipping_name = shipping_details.get("name")
-            order.shipping_line1 = shipping_address.get("line1")
-            order.shipping_line2 = shipping_address.get("line2")
-            order.shipping_city = shipping_address.get("city")
-            order.shipping_state = shipping_address.get("state")
-            order.shipping_postal_code = shipping_address.get("postal_code")
-            order.shipping_country = shipping_address.get("country")
+            mark_gallery_order_paid(session, order, checkout_session)
             session.commit()
             session.refresh(order)
             if order.customer_email:
