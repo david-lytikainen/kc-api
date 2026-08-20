@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS gallery_items (
     image_url VARCHAR(1024) NOT NULL,
     s3_key VARCHAR(512),
     price_cents INTEGER,
+    is_sold BOOLEAN NOT NULL DEFAULT FALSE,
     display_order INTEGER NOT NULL DEFAULT 0,
     is_published BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -174,6 +175,9 @@ ALTER TABLE gallery_inquiry_comments
 ALTER TABLE gallery_order_comments
     ADD COLUMN IF NOT EXISTS email_error TEXT;
 
+ALTER TABLE gallery_items
+    ADD COLUMN IF NOT EXISTS is_sold BOOLEAN NOT NULL DEFAULT FALSE;
+
 INSERT INTO gallery_item_images (gallery_item_id, image_url, s3_key, display_order)
 SELECT gallery_items.id, gallery_items.image_url, gallery_items.s3_key, 10
 FROM gallery_items
@@ -185,6 +189,7 @@ WHERE NOT EXISTS (
 
 CREATE INDEX IF NOT EXISTS ix_gallery_items_display_order ON gallery_items (display_order);
 CREATE INDEX IF NOT EXISTS ix_gallery_items_is_published ON gallery_items (is_published);
+CREATE INDEX IF NOT EXISTS ix_gallery_items_is_sold ON gallery_items (is_sold);
 CREATE INDEX IF NOT EXISTS ix_gallery_item_images_gallery_item_id ON gallery_item_images (gallery_item_id);
 CREATE INDEX IF NOT EXISTS ix_gallery_item_images_display_order ON gallery_item_images (display_order);
 CREATE INDEX IF NOT EXISTS ix_gallery_orders_order_number ON gallery_orders (order_number);

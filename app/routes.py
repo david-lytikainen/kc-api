@@ -125,7 +125,7 @@ def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
         image_url = images[0].image_url
     if not images and (item.image_url or item.s3_key):
         images = [GalleryItemImageResponse(id=0, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, display_order=10)]
-    return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, price_cents=item.price_cents, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at, images=images)
+    return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, price_cents=item.price_cents, is_sold=item.is_sold, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at, images=images)
 
 
 def sync_gallery_cover_image(item: GalleryItem) -> None:
@@ -155,6 +155,7 @@ def mark_gallery_order_paid(session: Session, order: GalleryOrder, checkout_sess
     item = session.get(GalleryItem, order.gallery_item_id) if order.gallery_item_id else None
     if item and item.price_cents is not None:
         item.price_cents = None
+        item.is_sold = True
 
 
 def build_category_response(category: CommissionCategory) -> CategoryResponse:
@@ -910,6 +911,7 @@ def create_gallery_item(
             if amount <= 0:
                 raise HTTPException(status_code=400, detail="Price must be greater than zero.")
             item.price_cents = int(amount * 100)
+            item.is_sold = False
         else:
             item.price_cents = None
         for index, upload in enumerate(uploaded_files, start=1):
@@ -959,6 +961,7 @@ def update_gallery_item(
             if amount <= 0:
                 raise HTTPException(status_code=400, detail="Price must be greater than zero.")
             item.price_cents = int(amount * 100)
+            item.is_sold = False
         else:
             item.price_cents = None
         if uploaded_files:

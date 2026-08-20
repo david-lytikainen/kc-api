@@ -107,6 +107,7 @@ class GalleryItem(Base):
     image_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     s3_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     price_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_sold: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
