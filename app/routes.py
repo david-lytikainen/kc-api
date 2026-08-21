@@ -20,6 +20,7 @@ from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLIN
 
 router = APIRouter()
 EMAILS_DIR = Path(__file__).with_name("emails")
+GALLERY_SHIPPING_COUNTRIES = ["US", "CA", "GB", "AU", "NZ"]
 
 
 def build_admin_response() -> UserResponse:
@@ -220,6 +221,30 @@ def mark_review_discount_redeemed(session: Session, review_id: int | None, order
         return
     review.discount_redeemed_order_number = order_number
     review.discount_redeemed_at = datetime.now(timezone.utc)
+
+
+def build_checkout_product_name(name: str, applied_discount_cents: int) -> str:
+    return f"{name} (10% review reward applied)" if applied_discount_cents else name
+
+
+def create_checkout_session(*, success_url: str, cancel_url: str, customer_email: str, amount_cents: int, product_name: str, metadata: dict[str, str], collect_shipping: bool = False) -> stripe.checkout.Session:
+    checkout_payload: dict[str, object] = {
+        "mode": "payment",
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "customer_email": customer_email,
+        "line_items": [{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": amount_cents, "product_data": {"name": product_name}}}],
+        "metadata": metadata,
+    }
+    if collect_shipping:
+        checkout_payload["billing_address_collection"] = "required"
+        checkout_payload["shipping_address_collection"] = {"allowed_countries": GALLERY_SHIPPING_COUNTRIES}
+    return stripe.checkout.Session.create(**checkout_payload)
+
+
+def create_gallery_order(session: Session, *, order_number: str, item: GalleryItem, customer_email: str, checkout_session_id: str, applied_review_discount_cents: int) -> None:
+    submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
+    session.add(GalleryOrder(order_number=order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, applied_review_discount_cents=applied_review_discount_cents, status_id=submitted_status.id, is_paid=False, customer_name="Customer", customer_email=customer_email, stripe_checkout_session_id=checkout_session_id))
 
 
 def load_order_comments(session: Session, order_id: int) -> list[CommissionComment]:
@@ -741,21 +766,13 @@ def create_order_checkout(order_number: str) -> dict[str, str]:
             raise HTTPException(status_code=400, detail="Stripe is not configured.")
         checkout_amount_cents, applied_discount_cents, _, reward_review_id = calculate_review_discount(order.quote_amount_cents, order.customer_email, session)
         checkout_amount_cents = checkout_amount_cents or order.quote_amount_cents
-        checkout_name = f"Commission {order.order_number}"
-        if applied_discount_cents:
-            checkout_name = f"{checkout_name} (10% review reward applied)"
-        checkout = stripe.checkout.Session.create(
-            mode="payment",
+        checkout = create_checkout_session(
             success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}?checkout_session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}",
             customer_email=order.customer_email,
-            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": checkout_amount_cents, "product_data": {"name": checkout_name}}}],
-            metadata={
-                "order_number": order.order_number,
-                "order_kind": "commission",
-                "reward_review_id": str(reward_review_id or ""),
-                "applied_review_discount_cents": str(applied_discount_cents),
-            },
+            amount_cents=checkout_amount_cents,
+            product_name=build_checkout_product_name(f"Commission {order.order_number}", applied_discount_cents),
+            metadata={"order_number": order.order_number, "order_kind": "commission", "reward_review_id": str(reward_review_id or ""), "applied_review_discount_cents": str(applied_discount_cents)},
         )
         return {"url": checkout.url}
 
@@ -799,18 +816,16 @@ def create_gallery_checkout(item_id: int, payload: GalleryCheckoutRequest) -> di
         checkout_amount_cents, applied_discount_cents, _, reward_review_id = calculate_review_discount(item.price_cents, customer_email, session)
         checkout_amount_cents = checkout_amount_cents or item.price_cents
         order_number = generate_order_number(session)
-        checkout = stripe.checkout.Session.create(
-            mode="payment",
+        checkout = create_checkout_session(
             success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order_number}",
             cancel_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}",
-            billing_address_collection="required",
             customer_email=customer_email,
-            shipping_address_collection={"allowed_countries": ["US", "CA", "GB", "AU", "NZ"]},
-            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": checkout_amount_cents, "product_data": {"name": item.title if not applied_discount_cents else f'{item.title} (10% review reward applied)'}}}],
+            amount_cents=checkout_amount_cents,
+            product_name=build_checkout_product_name(item.title, applied_discount_cents),
             metadata={"order_kind": "gallery", "order_number": order_number, "gallery_item_id": str(item.id), "reward_review_id": str(reward_review_id or ""), "applied_review_discount_cents": str(applied_discount_cents)},
+            collect_shipping=True,
         )
-        submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
-        session.add(GalleryOrder(order_number=order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, applied_review_discount_cents=applied_discount_cents, status_id=submitted_status.id, is_paid=False, customer_name="Customer", customer_email=customer_email, stripe_checkout_session_id=checkout.id))
+        create_gallery_order(session, order_number=order_number, item=item, customer_email=customer_email, checkout_session_id=checkout.id, applied_review_discount_cents=applied_discount_cents)
         session.commit()
         return {"url": checkout.url}
 
@@ -831,18 +846,16 @@ def create_gallery_inquiry_checkout(order_number: str) -> dict[str, str]:
         checkout_amount_cents, applied_discount_cents, _, reward_review_id = calculate_review_discount(item.price_cents, inquiry.customer_email, session)
         checkout_amount_cents = checkout_amount_cents or item.price_cents
         purchase_order_number = generate_order_number(session)
-        checkout = stripe.checkout.Session.create(
-            mode="payment",
+        checkout = create_checkout_session(
             success_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{purchase_order_number}",
             cancel_url=f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{inquiry.order_number}",
-            billing_address_collection="required",
             customer_email=inquiry.customer_email,
-            shipping_address_collection={"allowed_countries": ["US", "CA", "GB", "AU", "NZ"]},
-            line_items=[{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": checkout_amount_cents, "product_data": {"name": item.title if not applied_discount_cents else f'{item.title} (10% review reward applied)'}}}],
+            amount_cents=checkout_amount_cents,
+            product_name=build_checkout_product_name(item.title, applied_discount_cents),
             metadata={"order_kind": "gallery", "order_number": purchase_order_number, "gallery_item_id": str(item.id), "inquiry_order_number": inquiry.order_number, "reward_review_id": str(reward_review_id or ""), "applied_review_discount_cents": str(applied_discount_cents)},
+            collect_shipping=True,
         )
-        submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
-        session.add(GalleryOrder(order_number=purchase_order_number, gallery_item_id=item.id, item_title=item.title, item_image_url=item.image_url, amount_cents=item.price_cents, applied_review_discount_cents=applied_discount_cents, status_id=submitted_status.id, is_paid=False, customer_name="Customer", customer_email=inquiry.customer_email, stripe_checkout_session_id=checkout.id))
+        create_gallery_order(session, order_number=purchase_order_number, item=item, customer_email=inquiry.customer_email, checkout_session_id=checkout.id, applied_review_discount_cents=applied_discount_cents)
         session.commit()
         return {"url": checkout.url}
 
