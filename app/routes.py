@@ -227,6 +227,12 @@ def build_checkout_product_name(name: str, applied_discount_cents: int) -> str:
     return f"{name} (10% review reward applied)" if applied_discount_cents else name
 
 
+def build_checkout_custom_text(applied_discount_cents: int) -> dict[str, dict[str, str]] | None:
+    if not applied_discount_cents:
+        return None
+    return {"submit": {"message": f"Your 10% review reward is already applied here. You are saving ${(applied_discount_cents / 100):.2f} on this checkout."}}
+
+
 def create_checkout_session(*, success_url: str, cancel_url: str, customer_email: str, amount_cents: int, product_name: str, metadata: dict[str, str], collect_shipping: bool = False) -> stripe.checkout.Session:
     checkout_payload: dict[str, object] = {
         "mode": "payment",
@@ -239,6 +245,10 @@ def create_checkout_session(*, success_url: str, cancel_url: str, customer_email
     if collect_shipping:
         checkout_payload["billing_address_collection"] = "required"
         checkout_payload["shipping_address_collection"] = {"allowed_countries": GALLERY_SHIPPING_COUNTRIES}
+    applied_discount_cents = int(metadata.get("applied_review_discount_cents", "0") or "0")
+    custom_text = build_checkout_custom_text(applied_discount_cents)
+    if custom_text:
+        checkout_payload["custom_text"] = custom_text
     return stripe.checkout.Session.create(**checkout_payload)
 
 
