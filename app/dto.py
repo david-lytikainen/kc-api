@@ -137,6 +137,7 @@ class CommissionOrderSummaryResponse(DtoModel):
     order_number: str
     order_kind: str
     customer_name: str
+    customer_email: str
     category_name: str
     status: str
     amount_cents: int | None
