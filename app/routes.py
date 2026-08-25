@@ -554,13 +554,10 @@ def update_category(category_id: int, payload: CategoryUpdateRequest, authorizat
 def list_admin_orders(page: int = Query(default=1, ge=1), page_size: int = Query(default=10, ge=1, le=50), authorization: str | None = Header(default=None)) -> PaginatedOrdersResponse:
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
-        commission_total = session.scalar(select(func.count()).select_from(CommissionRequest)) or 0
-        gallery_total = session.scalar(select(func.count()).select_from(GalleryOrder).where(GalleryOrder.is_paid.is_(True))) or 0
-        inquiry_total = session.scalar(select(func.count()).select_from(GalleryInquiry)) or 0
-        total = commission_total + gallery_total + inquiry_total
         commission_orders = session.scalars(select(CommissionRequest).order_by(CommissionRequest.created_at.desc(), CommissionRequest.id.desc())).all()
         gallery_orders = session.scalars(select(GalleryOrder).where(GalleryOrder.is_paid.is_(True)).order_by(GalleryOrder.created_at.desc(), GalleryOrder.id.desc())).all()
         gallery_inquiries = session.scalars(select(GalleryInquiry).order_by(GalleryInquiry.created_at.desc(), GalleryInquiry.id.desc())).all()
+        total = len(commission_orders) + len(gallery_orders) + len(gallery_inquiries)
         category_ids = [order.category_id for order in commission_orders if order.category_id]
         categories = session.scalars(select(CommissionCategory).where(CommissionCategory.id.in_(category_ids))).all() if category_ids else []
         category_by_id = {category.id: category for category in categories}
@@ -586,7 +583,7 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
         submitted_status = get_status_by_name(session, STATUS_SUBMITTED)
         order_number = generate_order_number(session)
         customer_name_value = customer_name.strip()
-        customer_email_value = customer_email.strip().lower()
+        customer_email_value = normalize_customer_email(customer_email)
         customer_phone_value = customer_phone.strip()
         instructions_value = instructions.strip()
         medium_value = medium.strip()
