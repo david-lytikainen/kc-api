@@ -210,6 +210,8 @@ class CustomerReview(Base):
     rating: Mapped[int] = mapped_column(Integer, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     discount_awarded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    discount_code: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    stripe_promotion_code_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     discount_redeemed_order_number: Mapped[str | None] = mapped_column(String(6), nullable=True, index=True)
     discount_redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)

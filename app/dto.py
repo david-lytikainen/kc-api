@@ -93,10 +93,6 @@ class GalleryInquiryRequest(DtoModel):
     body: str
 
 
-class GalleryCheckoutRequest(DtoModel):
-    customer_email: EmailStr
-
-
 class CommissionCommentResponse(DtoModel):
     id: int
     author_role: str
@@ -117,6 +113,7 @@ class ReviewResponse(DtoModel):
     rating: int
     body: str
     discount_awarded: bool
+    discount_code: str | None
     created_at: datetime
     updated_at: datetime
 

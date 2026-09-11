@@ -153,6 +153,8 @@ CREATE TABLE IF NOT EXISTS customer_reviews (
     rating INTEGER NOT NULL,
     body TEXT NOT NULL,
     discount_awarded BOOLEAN NOT NULL DEFAULT FALSE,
+    discount_code VARCHAR(64),
+    stripe_promotion_code_id VARCHAR(255),
     discount_redeemed_order_number VARCHAR(6),
     discount_redeemed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -206,6 +208,12 @@ ALTER TABLE customer_reviews
 ALTER TABLE customer_reviews
     ADD COLUMN IF NOT EXISTS discount_redeemed_at TIMESTAMPTZ;
 
+ALTER TABLE customer_reviews
+    ADD COLUMN IF NOT EXISTS discount_code VARCHAR(64);
+
+ALTER TABLE customer_reviews
+    ADD COLUMN IF NOT EXISTS stripe_promotion_code_id VARCHAR(255);
+
 INSERT INTO gallery_item_images (gallery_item_id, image_url, s3_key, display_order)
 SELECT gallery_items.id, gallery_items.image_url, gallery_items.s3_key, 10
 FROM gallery_items
@@ -244,3 +252,5 @@ CREATE INDEX IF NOT EXISTS ix_gallery_order_comments_author_role_id ON gallery_o
 CREATE INDEX IF NOT EXISTS ix_customer_reviews_order_number ON customer_reviews (order_number);
 CREATE INDEX IF NOT EXISTS ix_customer_reviews_customer_email ON customer_reviews (customer_email);
 CREATE INDEX IF NOT EXISTS ix_customer_reviews_discount_redeemed_order_number ON customer_reviews (discount_redeemed_order_number);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_customer_reviews_discount_code ON customer_reviews (discount_code) WHERE discount_code IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS ix_customer_reviews_stripe_promotion_code_id ON customer_reviews (stripe_promotion_code_id) WHERE stripe_promotion_code_id IS NOT NULL;
