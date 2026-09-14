@@ -217,6 +217,7 @@ def create_checkout_session(*, success_url: str, cancel_url: str, customer_email
         "mode": "payment",
         "success_url": success_url,
         "cancel_url": cancel_url,
+        "payment_method_types": ["card"],
         "allow_promotion_codes": True,
         "line_items": [{"quantity": 1, "price_data": {"currency": "usd", "unit_amount": amount_cents, "product_data": {"name": product_name}}}],
         "metadata": metadata,
