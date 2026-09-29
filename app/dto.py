@@ -29,6 +29,7 @@ class GalleryItemResponse(DtoModel):
     s3_key: str | None
     price_cents: int | None
     is_sold: bool
+    is_published: bool
     display_order: int
     created_at: datetime
     updated_at: datetime

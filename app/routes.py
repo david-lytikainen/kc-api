@@ -126,7 +126,7 @@ def build_gallery_item_response(item: GalleryItem) -> GalleryItemResponse:
         image_url = images[0].image_url
     if not images and (item.image_url or item.s3_key):
         images = [GalleryItemImageResponse(id=0, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, display_order=10)]
-    return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, price_cents=item.price_cents, is_sold=item.is_sold, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at, images=images)
+    return GalleryItemResponse(id=item.id, title=item.title, description=item.description, image_url=image_url, source_image_url=item.image_url, s3_key=item.s3_key, price_cents=item.price_cents, is_sold=item.is_sold, is_published=item.is_published, display_order=item.display_order, created_at=item.created_at, updated_at=item.updated_at, images=images)
 
 
 def sync_gallery_cover_image(item: GalleryItem) -> None:
@@ -1032,7 +1032,7 @@ def update_order_status(order_number: str, payload: StatusUpdateRequest, authori
 def list_admin_gallery_items(authorization: str | None = Header(default=None)) -> list[GalleryItemResponse]:
     with SessionLocal() as session:
         get_current_admin_user(session, authorization)
-        items = session.scalars(select(GalleryItem).order_by(GalleryItem.display_order.asc(), GalleryItem.id.asc())).all()
+        items = session.scalars(select(GalleryItem).order_by(GalleryItem.is_published.desc(), GalleryItem.display_order.asc(), GalleryItem.id.asc())).all()
         return [build_gallery_item_response(item) for item in items]
 
 
@@ -1094,6 +1094,7 @@ def update_gallery_item(
     title: str = Form(...),
     description: str = Form(...),
     price_amount: str = Form(default=""),
+    is_published: bool | None = Form(default=None),
     existing_image_ids: list[int] | None = Form(default=None),
     files: list[UploadFile] | None = File(default=None),
     authorization: str | None = Header(default=None),
@@ -1108,6 +1109,8 @@ def update_gallery_item(
             raise HTTPException(status_code=400, detail="You can upload at most 5 gallery images.")
         item.title = title.strip()
         item.description = description.strip()
+        if is_published is not None:
+            item.is_published = is_published
         if price_amount.strip():
             try:
                 amount = Decimal(price_amount).quantize(Decimal("0.01"))
@@ -1150,18 +1153,6 @@ def update_gallery_item(
         session.commit()
         session.refresh(item)
         return build_gallery_item_response(item)
-
-
-@router.delete("/admin/gallery/{item_id}")
-def delete_gallery_item(item_id: int, authorization: str | None = Header(default=None)) -> dict[str, str]:
-    with SessionLocal() as session:
-        get_current_admin_user(session, authorization)
-        item = session.get(GalleryItem, item_id)
-        if not item:
-            raise HTTPException(status_code=404, detail="Gallery item not found.")
-        session.delete(item)
-        session.commit()
-        return {"status": "deleted"}
 
 
 @router.post("/admin/gallery/reorder")
