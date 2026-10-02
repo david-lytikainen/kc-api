@@ -8,6 +8,7 @@ Minimal FastAPI + SQLAlchemy skeleton for the art commission site.
 - `app/config.py`: simple `.env` loading, engine, and session setup
 - `app/dto.py`: API request/response DTOs with camelCase aliases for the frontend
 - `app/routes.py`: all FastAPI routes and route helpers
+- `app/reads.py`: maps handwritten lowercase SQL reads to models, including related records and refreshes
 - `app/models.py`: SQLAlchemy models
 - `requirements.txt`: backend dependencies
 - `.env.example`: backend environment template
@@ -80,6 +81,11 @@ python app/main.py
 
 ## Notes
 
+- Application reads use parameterized lowercase SQL; SQLAlchemy still manages writes and transactions. Relationship lazy loading is disabled, and post-save refreshes use explicit SQL.
 - The current UI expects the API on `http://localhost:8000` unless you override `REACT_APP_API_BASE_URL` in `kc-ui`.
 - DTO responses now serialize in camelCase for the frontend, while backend code still uses snake_case internally.
 - The minimal Stripe webhook path is `POST /stripe/webhook`. Point your Stripe Checkout webhook at it and send `checkout.session.completed` events.
+
+## Tests
+
+Run `python -m unittest discover -s tests -v` after installing the requirements. Tests use an isolated in-memory SQLite database and mock email, S3, and reward-code creation.

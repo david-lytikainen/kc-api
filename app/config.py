@@ -28,4 +28,4 @@ CORS_ORIGIN_LIST = [origin.strip() for origin in CORS_ORIGINS.split(",") if orig
 
 stripe.api_key = STRIPE_SECRET_KEY or None
 engine = create_engine(DATABASE_URL, future=True)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)

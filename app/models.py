@@ -70,7 +70,7 @@ class CommissionRequest(Base):
     customer_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    status: Mapped[CommissionStatusType] = relationship()
+    status: Mapped[CommissionStatusType] = relationship(lazy="raise")
 
 
 class CommissionFile(Base):
@@ -96,7 +96,7 @@ class CommissionComment(Base):
     email_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    author_role: Mapped[Role] = relationship()
+    author_role: Mapped[Role] = relationship(lazy="raise")
 
 
 class GalleryItem(Base):
@@ -113,7 +113,7 @@ class GalleryItem(Base):
     is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    images: Mapped[list["GalleryItemImage"]] = relationship(back_populates="gallery_item", cascade="all, delete-orphan", order_by="GalleryItemImage.display_order")
+    images: Mapped[list["GalleryItemImage"]] = relationship(lazy="raise", back_populates="gallery_item", cascade="all, delete-orphan", order_by="GalleryItemImage.display_order")
 
 
 class GalleryItemImage(Base):
@@ -126,7 +126,7 @@ class GalleryItemImage(Base):
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    gallery_item: Mapped[GalleryItem] = relationship(back_populates="images")
+    gallery_item: Mapped[GalleryItem] = relationship(lazy="raise", back_populates="images")
 
 
 class GalleryOrder(Base):
@@ -154,7 +154,7 @@ class GalleryOrder(Base):
     customer_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    status: Mapped[CommissionStatusType | None] = relationship()
+    status: Mapped[CommissionStatusType | None] = relationship(lazy="raise")
 
 
 class GalleryInquiry(Base):
@@ -183,7 +183,7 @@ class GalleryInquiryComment(Base):
     email_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    author_role: Mapped[Role] = relationship()
+    author_role: Mapped[Role] = relationship(lazy="raise")
 
 
 class GalleryOrderComment(Base):
@@ -197,7 +197,7 @@ class GalleryOrderComment(Base):
     email_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    author_role: Mapped[Role] = relationship()
+    author_role: Mapped[Role] = relationship(lazy="raise")
 
 
 class CustomerReview(Base):
