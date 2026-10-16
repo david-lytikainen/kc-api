@@ -8,3 +8,5 @@ PyJWT==2.9.0
 email-validator==2.2.0
 python-multipart==0.0.9
 stripe==12.4.0
+pillow==11.3.0
+pillow-avif-plugin==1.5.2

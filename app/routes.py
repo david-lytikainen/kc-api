@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 import stripe
 
 from app.config import ADMIN_EMAIL, ADMIN_NAME, ADMIN_PASSWORD, AWS_REGION, JWT_SECRET, MAIL_PASSWORD, MAIL_PORT, MAIL_SERVER, MAIL_USERNAME, PUBLIC_APP_BASE_URL, S3_BUCKET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SessionLocal
+from app.image_uploads import prepare_image_upload
 from app.reads import read_all, read_one, refresh
 from app.dto import AuthResponse, CategoryCreateRequest, CategoryResponse, CategoryUpdateRequest, CheckoutConfirmRequest, CommissionCommentRequest, CommissionCommentResponse, CommissionFileResponse, CommissionOrderResponse, CommissionOrderSummaryResponse, GalleryInquiryRequest, GalleryItemImageResponse, GalleryItemResponse, GalleryReorderRequest, LoginRequest, PaginatedOrdersResponse, QuoteRequest, ReviewRequest, ReviewResponse, StatusUpdateRequest, UserResponse
 from app.models import ROLE_ADMIN, ROLE_CUSTOMER, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_DELIVERED, STATUS_IN_PROGRESS, STATUS_QUOTED, STATUS_SHIPPED, STATUS_SUBMITTED, CommissionCategory, CommissionComment, CommissionFile, CommissionRequest, CommissionStatusType, CustomerReview, GalleryInquiry, GalleryInquiryComment, GalleryItem, GalleryItemImage, GalleryOrder, GalleryOrderComment, Role
@@ -599,9 +600,10 @@ async def create_commission_request(customer_name: str = Form(...), customer_ema
         if prepared_files:
             client = get_s3_client()
             for file, content in prepared_files:
-                key = f"commissions/{order.order_number}/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{file.filename}"
-                client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=file.content_type)
-                session.add(CommissionFile(commission_request_id=order.id, file_name=file.filename or "reference-image", s3_key=key, content_type=file.content_type, size_bytes=len(content)))
+                content, filename, content_type = prepare_image_upload(content, file.filename or "reference-image", file.content_type)
+                key = f"commissions/{order.order_number}/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{filename}"
+                client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=content_type)
+                session.add(CommissionFile(commission_request_id=order.id, file_name=filename, s3_key=key, content_type=content_type or "application/octet-stream", size_bytes=len(content)))
             session.commit()
         link = f"{PUBLIC_APP_BASE_URL.rstrip('/')}/order/{order.order_number}"
         send_plain_email(order.customer_email, f"Your commission request {order.order_number}", render_email_template("commission_submission.txt", order_number=order.order_number, link=link))
@@ -1076,8 +1078,9 @@ def create_gallery_item(
             content = upload.file.read()
             if len(content) > 10 * 1024 * 1024:
                 raise HTTPException(status_code=400, detail="Each gallery image must be 10MB or smaller.")
-            key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{index}-{upload.filename}"
-            client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=upload.content_type)
+            content, filename, content_type = prepare_image_upload(content, upload.filename or "image", upload.content_type)
+            key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{index}-{filename}"
+            client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=content_type)
             image = GalleryItemImage(image_url="", s3_key=key, display_order=index * 10)
             item.images.append(image)
             if index == 1:
@@ -1134,8 +1137,9 @@ def update_gallery_item(
             content = upload.file.read()
             if len(content) > 10 * 1024 * 1024:
                 raise HTTPException(status_code=400, detail="Each gallery image must be 10MB or smaller.")
-            key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{index}-{upload.filename}"
-            client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=upload.content_type)
+            content, filename, content_type = prepare_image_upload(content, upload.filename or "image", upload.content_type)
+            key = f"gallery/{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{index}-{filename}"
+            client.put_object(Bucket=S3_BUCKET, Key=key, Body=content, ContentType=content_type)
             image = GalleryItemImage(image_url="", s3_key=key, display_order=index * 10)
             item.images.append(image)
         if not uploaded_files and existing_image_ids is not None:
